@@ -11,7 +11,7 @@ const cases = [
  ['homepage reference sections return', 'homepage keeps the pitch compact and routes reference content to the guide', 'index.html', s => s.replace('</main>', '<section class="faq"></section></main>')],
  ['broken fragment link', 'internal links and fragments resolve, IDs are unique per page', 'index.html', s => s.replace('href="guide.html#compare"', 'href="#nowhere"')],
  ['third-party tracker', 'local assets exist and nothing loads from another origin', 'index.html', s => s.replace('</head>', '<script src="https://analytics.example/t.js"></script></head>')],
- ['link to an unknown site', 'local assets exist and nothing loads from another origin', 'legal.html', s => s.replace('https://github.com/danieljcuesta007/skeptic/issues', 'https://example.com/issues')],
+ ['link to an unknown site', 'local assets exist and nothing loads from another origin', 'legal.html', s => s.replace('https://github.com/danielcuesta007/skeptic/issues', 'https://example.com/issues')],
  ['inline style blocked by CSP', 'markup works under the strict content security policy', 'index.html', s => s.replace('<h1 id="hero-title">', '<h1 id="hero-title" style="color:#fff">')],
  ['CSP loosened', 'markup works under the strict content security policy', '_headers', s => s.replace("connect-src 'none'", "connect-src *")],
  ['second h1', 'each page has one h1, a skip link and labelled navigation', 'legal.html', s => s.replace('</main>', '<h1>Again</h1></main>')],

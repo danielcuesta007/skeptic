@@ -1,11 +1,11 @@
 # Homebrew formula for Skeptic.
-#   brew tap danieljcuesta007/skeptic https://github.com/danieljcuesta007/skeptic
+#   brew tap danielcuesta007/skeptic https://github.com/danielcuesta007/skeptic
 #   brew install skeptic
 # scripts/release.sh fills in url and sha256 for each release.
 class Skeptic < Formula
   desc "Switch AI coding agents mid-task without losing your work"
   homepage "https://skeptic.pages.dev"
-  url "https://github.com/danieljcuesta007/skeptic/releases/download/v0.1.0/skeptic-0.1.0.tar.gz"
+  url "https://github.com/danielcuesta007/skeptic/releases/download/v0.1.0/skeptic-0.1.0.tar.gz"
   sha256 "9988c22478bf3a9ea4cbed29e949e07320bc89401b7f234b8bf3f4e5dbdd22bf"
   license "MIT"
 

@@ -13,7 +13,7 @@ const headers = await readFile('_headers', 'utf8');
 const installer = await readFile('install.sh', 'utf8');
 const formula = await readFile('../../Formula/skeptic.rb', 'utf8');
 const SHIPPED = ['index.html', 'guide.html', 'legal.html', 'style.css', 'site.js', 'favicon.svg', 'install.sh', '_headers', 'landing.js', 'landing.css', 'utilities.css'];
-const OUTBOUND = /^https:\/\/(github\.com\/danieljcuesta007(\/|$)|skeptic\.pages\.dev\/|danielcuesta007\.com$|addisuna\.com$|www\.linkedin\.com\/in\/danielcuesta007\/$)/;
+const OUTBOUND = /^https:\/\/(github\.com\/danielcuesta007(\/|$)|skeptic\.pages\.dev\/|danielcuesta007\.com$|addisuna\.com$|www\.linkedin\.com\/in\/danielcuesta007\/$)/;
 
 test('internal links and fragments resolve, IDs are unique per page', () => {
   for (const [name, page] of Object.entries(pages)) {
