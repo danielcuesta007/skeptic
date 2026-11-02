@@ -5,7 +5,7 @@
 ## Install
 
 ```sh
-brew tap danieljcuesta007/skeptic https://github.com/danieljcuesta007/skeptic
+brew tap danielcuesta007/skeptic https://github.com/danielcuesta007/skeptic
 brew install skeptic && skeptic-setup
 # or
 curl -fsSL https://skeptic.pages.dev/install.sh | sh

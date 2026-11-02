@@ -13,6 +13,6 @@ export function LandingFooter() {
     palette={brand} fontWeight={800} crop={-0.1} dotGap={5} height="clamp(560px,43vw,680px)" className="skeptic-footer"
     columns={[
       { title: "Product", links: [{ label: "How it works", href: "#how" }, { label: "Compare", href: "guide.html#compare" }, { label: "Install", href: "#install" }] },
-      { title: "Project", links: [{ label: "Creator", href: "#creator" }, { label: "Source", href: "https://github.com/danieljcuesta007/skeptic" }, { label: "Privacy & legal", href: "legal.html" }] },
+      { title: "Project", links: [{ label: "Creator", href: "#creator" }, { label: "Source", href: "https://github.com/danielcuesta007/skeptic" }, { label: "Privacy & legal", href: "legal.html" }] },
     ]} />
 }

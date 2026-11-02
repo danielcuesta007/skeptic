@@ -33,7 +33,7 @@ archive="dist/skeptic-$VERSION.tar.gz"
 git archive --format=tar.gz --prefix="skeptic-$VERSION/" -o "$archive" HEAD
 sha=$(shasum -a 256 "$archive" | cut -d' ' -f1)
 
-url="https://github.com/danieljcuesta007/skeptic/releases/download/v$VERSION/skeptic-$VERSION.tar.gz"
+url="https://github.com/danielcuesta007/skeptic/releases/download/v$VERSION/skeptic-$VERSION.tar.gz"
 sed -i '' -e "s|^VERSION=\".*\"|VERSION=\"$VERSION\"|" -e "s|^SHA256=\".*\"|SHA256=\"$sha\"|" apps/website/install.sh
 sed -i '' -e "s|^  url \".*\"|  url \"$url\"|" -e "s|^  sha256 \".*\"|  sha256 \"$sha\"|" Formula/skeptic.rb
 
