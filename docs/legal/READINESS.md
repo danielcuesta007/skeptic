@@ -34,7 +34,7 @@ real conversation (the ND IDEA Center offers this free).
    it (the CLI is signed in as your nd.edu account), and (b) that Skeptic was never part
    of a class, ND-funded program or IDEA Center grant.
 3. **Repository goes public.** Homebrew and the one-line installer download from GitHub
-   releases, so `danieljcuesta007/skeptic` must be public first. Before the flip: scan
+   releases, so `danielcuesta007/skeptic` must be public first. Before the flip: scan
    the full history for secrets (standing rule).
 4. **Getting paid** (only if you sell): use a merchant of record (Lemon Squeezy or Paddle)
    so they handle sales tax; a business entity (e.g. an LLC) keeps it separate from you.
