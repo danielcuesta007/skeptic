@@ -13,6 +13,12 @@ Search existing issues before opening one. For a substantial code or architectur
 change, discuss the approach in an issue first. Never upload a vault or a session
 transcript to demonstrate a problem.
 
+## Talking with users and contributors
+
+Skeptic is judged by whether it solves a real problem, so explain changes in plain language
+and back claims with evidence. Ask what someone needs before declining a request. Don't
+promise more than the project can deliver, and raise problems early with the fix you recommend.
+
 ## Pull requests
 
 Branch from `dev` and target `dev`; release PRs promote `dev` to `main`. Keep each

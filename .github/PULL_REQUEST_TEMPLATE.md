@@ -1,5 +1,5 @@
 ## Why
-Quote the request or link the issue; explain the problem.
+Quote the request or link the issue; explain the problem and who it helps, in plain language.
 
 ## What changed
 Describe the resulting behavior and scope.
