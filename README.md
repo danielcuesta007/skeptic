@@ -53,9 +53,7 @@ No commits, pushes or deployment are performed by the switcher.
 Python 3.9+ and POSIX filesystem descriptor APIs for the local tools; no third-party
 Python runtime packages or provider accounts are required for synthetic validation.
 The website build requires Node 22+ with npm and its declared React, TypeScript
-and Tailwind dependencies. Install them once before running full validation:
-
-    npm ci --prefix apps/website
+and Tailwind dependencies. Full validation installs the locked versions on a fresh checkout:
 
     python3 tests/validate.py
 
