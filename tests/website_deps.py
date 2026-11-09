@@ -4,7 +4,8 @@ import subprocess
 
 
 def ensure_website_deps(website, env=None, which=shutil.which, run=subprocess.run, log=print):
-    if (website / 'node_modules').is_dir():
+    # npm writes this file when an install finishes, so an interrupted install doesn't count.
+    if (website / 'node_modules' / '.package-lock.json').is_file():
         return False
     if not which('npm'):
         raise SystemExit('Full validation needs Node 22+ with npm for the website build. '

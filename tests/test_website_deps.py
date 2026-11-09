@@ -21,8 +21,14 @@ class EnsureWebsiteDeps(unittest.TestCase):
 
     def test_existing_dependencies_are_left_alone(self):
         (self.website / 'node_modules').mkdir()
+        (self.website / 'node_modules' / '.package-lock.json').touch()
         self.assertFalse(self.ensure())
         self.assertEqual(self.calls, [])
+
+    def test_interrupted_install_is_installed_again(self):
+        (self.website / 'node_modules').mkdir()
+        self.assertTrue(self.ensure())
+        self.assertEqual(len(self.calls), 1)
 
     def test_fresh_checkout_installs_the_locked_versions(self):
         self.assertTrue(self.ensure())
