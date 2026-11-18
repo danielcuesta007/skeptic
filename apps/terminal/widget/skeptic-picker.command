@@ -1,6 +1,8 @@
 #!/bin/zsh -l
 # ⌘⇧S handoff — no visible shell steps; Skeptic sheets handle the UX.
 printf '\033[3J\033[H\033[2J\033]0;Skeptic · Session Handoff\007'
+# Legacy tab launcher — prefer skeptic-switch (⌘⇧S) which sets SKEPTIC_HOTKEY=1.
+export SKEPTIC_HOTKEY=1
 export SKEPTIC_HINT_TTY="$(cat "$HOME/.skeptic-widget/hint-tty" 2>/dev/null)"
 export SKEPTIC_HINT_TITLE="$(cat "$HOME/.skeptic-widget/hint-title" 2>/dev/null)"
 if [[ -z "$SKEPTIC_HINT_TTY" ]]; then

@@ -188,16 +188,14 @@ def pick_engine(engine_ids, labels, row, hint_tty='', hint_title='', run=None):
         'engines': engines,
     }
     ran = _native_dialog_run(payload, run=run)
-    choice = None
-    if ran is not None:
-        code, text = ran
-        if code == 1 or text == 'cancel':
-            return False
-        if code == 0 and text in engine_ids:
-            choice = text
-    if choice is None:
-        choice = pick_engine_osascript(engine_ids, labels, run=run)
-    return choice
+    if ran is None:
+        return pick_engine_osascript(engine_ids, labels, run=run)
+    code, text = ran
+    if code == 1 or text == 'cancel':
+        return False
+    if code == 0 and text in engine_ids:
+        return text
+    return None
 
 
 def confirm(summary, evidence, provider, packet, run=None):

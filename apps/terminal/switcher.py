@@ -715,7 +715,11 @@ def hotkey_headless():
 
 
 def hotkey_handoff():
-    return bool(os.environ.get('SKEPTIC_HINT_TTY'))
+    """True only for an explicit ⌘⇧S launch (not stale hint files or leftover exports)."""
+    if os.environ.get('SKEPTIC_HOTKEY') != '1':
+        return False
+    hint = os.environ.get('SKEPTIC_HINT_TTY', '').strip()
+    return bool(re.fullmatch(r'ttys[0-9]{3,4}', hint))
 
 
 def session_cli(args, state):
@@ -947,9 +951,6 @@ def _tracked_launch(state, model, cwd, packet, vault, task, handoff_title=''):
             proc, finalize = launch_popen(model, cwd, packet)
         if proc is None:
             finalize()
-            import time
-            time.sleep(2.5)
-            offer_close_stuck_tab(type('P', (), {'poll': lambda self: None})(), model, handoff_title)
             code = 0
         else:
             offer_close_stuck_tab(proc, model, handoff_title)

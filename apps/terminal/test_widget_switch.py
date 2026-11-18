@@ -60,6 +60,13 @@ class WidgetSwitchTests(unittest.TestCase):
         self.assertEqual(captured['kind'], 'active_session')
         self.assertEqual(captured['provider'], 'Codex')
 
+    def test_engine_picker_native_failure_skips_osascript(self):
+        row = {'label': 'Work', 'tty': 'ttys003'}
+        osa = unittest.mock.Mock(return_value='codex')
+        with unittest.mock.patch.object(w, 'pick_engine_osascript', osa), unittest.mock.patch.object(w, '_native_dialog_run', return_value=(2, '')):
+            self.assertIsNone(w.pick_engine(['codex'], ['Codex'], row))
+        osa.assert_not_called()
+
     def test_engine_picker_native_returns_choice(self):
         row = {'label': 'Spacing', 'tty': 'ttys014', 'tab_title': 'Work'}
         with unittest.mock.patch.object(w, '_native_dialog_run', return_value=(0, 'hermes')):

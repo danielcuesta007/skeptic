@@ -83,6 +83,7 @@ class SwitchTests(unittest.TestCase):
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             with patch.dict(os.environ, {}, clear=False):
                 os.environ.pop('SKEPTIC_HINT_TTY', None)
+                os.environ.pop('SKEPTIC_HOTKEY', None)
             entered = []
             with self.assertRaisesRegex(s.host.Denied, 'handoff is launching'):
                 with s.writer_reservation(self.state):
@@ -327,7 +328,7 @@ class SwitchTests(unittest.TestCase):
         self.assertEqual(list((self.root / 'handoffs2').iterdir()), [])
 
     def test_terminal_handoff_intro_shows_context(self):
-        with patch.dict(os.environ, {'SKEPTIC_HINT_TTY': 'ttys009', 'SKEPTIC_HINT_TITLE': 'Atlas fixes'}, clear=False), patch.object(s.sys.stdout, 'isatty', return_value=True):
+        with patch.dict(os.environ, {'SKEPTIC_HOTKEY': '1', 'SKEPTIC_HINT_TTY': 'ttys009', 'SKEPTIC_HINT_TITLE': 'Atlas fixes'}, clear=False), patch.object(s.sys.stdout, 'isatty', return_value=True):
             os.environ.pop('NO_COLOR', None)
             text = s.terminal_intro(hotkey=True)
         self.assertIn('SKEPTIC', text)
@@ -351,7 +352,7 @@ class SwitchTests(unittest.TestCase):
 
     def test_handoff_picker_header_no_truecolor(self):
         with patch.object(s.sys.stdout, 'isatty', return_value=True), patch.dict(
-                os.environ, {'SKEPTIC_HINT_TTY': 'ttys014', 'SKEPTIC_HINT_TITLE': 'Codex work'}, clear=False):
+                os.environ, {'SKEPTIC_HOTKEY': '1', 'SKEPTIC_HINT_TTY': 'ttys014', 'SKEPTIC_HINT_TITLE': 'Codex work'}, clear=False):
             os.environ.pop('NO_COLOR', None)
             lines = s.handoff_picker_header('Choose engine', 80, s.sys.stdout)
         blob = '\n'.join(lines)
@@ -360,9 +361,9 @@ class SwitchTests(unittest.TestCase):
         self.assertNotIn('[38;2;', blob)
 
     def test_close_source_tab_default_on_for_hotkey(self):
-        with patch.dict(os.environ, {'SKEPTIC_HINT_TTY': 'ttys002'}, clear=False):
+        with patch.dict(os.environ, {'SKEPTIC_HOTKEY': '1', 'SKEPTIC_HINT_TTY': 'ttys002'}, clear=False):
             self.assertTrue(s.close_source_tab_ok())
-        with patch.dict(os.environ, {'SKEPTIC_HINT_TTY': 'ttys002', 'SKEPTIC_CLOSE_SOURCE_TAB': '0'}, clear=False):
+        with patch.dict(os.environ, {'SKEPTIC_HOTKEY': '1', 'SKEPTIC_HINT_TTY': 'ttys002', 'SKEPTIC_CLOSE_SOURCE_TAB': '0'}, clear=False):
             self.assertFalse(s.close_source_tab_ok())
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop('SKEPTIC_HINT_TTY', None)
@@ -384,11 +385,11 @@ class SwitchTests(unittest.TestCase):
     def test_offer_close_stuck_tab_waits_then_confirms(self):
         proc = subprocess.Popen(['/bin/sleep', '0.3'])
         self.addCleanup(lambda: proc.poll() or proc.kill())
-        with patch.dict(os.environ, {'SKEPTIC_HINT_TTY': 'ttys009'}, clear=False), patch.object(s, 'context_tty', return_value='ttys002'), patch.object(s, 'provider_spawned_ok', return_value=True), patch('widget_switch.confirm_close_source', return_value=True), patch.object(s, 'close_stuck_terminal_tab', return_value=True):
+        with patch.dict(os.environ, {'SKEPTIC_HOTKEY': '1', 'SKEPTIC_HINT_TTY': 'ttys009'}, clear=False), patch.object(s, 'context_tty', return_value='ttys002'), patch.object(s, 'provider_spawned_ok', return_value=True), patch('widget_switch.confirm_close_source', return_value=True), patch.object(s, 'close_stuck_terminal_tab', return_value=True):
             self.assertTrue(s.offer_close_stuck_tab(proc, {'id': 'codex', 'label': 'Codex'}, 'Atlas'))
 
     def test_continue_argv_adds_widget_on_hotkey(self):
-        with patch.dict(os.environ, {'SKEPTIC_HINT_TTY': 'ttys002'}):
+        with patch.dict(os.environ, {'SKEPTIC_HOTKEY': '1', 'SKEPTIC_HINT_TTY': 'ttys002'}):
             self.assertEqual(s.continue_argv(['session', 'continue', '--with', 'codex']), ['session', 'continue', '--with', 'codex', '--widget-switch'])
         self.assertEqual(s.continue_argv(['session', 'continue', '--with', 'codex', '--widget-switch']), ['session', 'continue', '--with', 'codex', '--widget-switch'])
 

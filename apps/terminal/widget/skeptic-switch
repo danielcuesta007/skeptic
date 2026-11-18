@@ -1,12 +1,27 @@
 #!/usr/bin/osascript
--- ⌘⇧S: capture the selected Terminal tab, then open a new tab running the handoff picker.
+-- ⌘⇧S: handoff from the front Terminal tab (headless shell + native Skeptic sheets).
+-- Silent no-op when Terminal is not front — avoids surprise dialogs in Cursor, browser, etc.
 
-on reportError(theMsg)
-	display dialog theMsg with title "Skeptic · Session Handoff" buttons {"OK"} default button "OK" with icon caution
-end reportError
+on silentNote(msg)
+	try
+		display notification msg with title "Skeptic · Session Handoff"
+	on error
+		-- notification optional
+	end try
+end silentNote
 
 on run
 	set home to POSIX path of (path to home folder)
+	set widgetDir to home & ".skeptic-widget"
+	do shell script "/bin/mkdir -p " & quoted form of widgetDir
+	set debounce to "now=$(date +%s); last=$(cat " & quoted form of (widgetDir & "last-switch") & " 2>/dev/null || echo 0); test $((now - last)) -ge 2 || exit 200; printf %s \"$now\" > " & quoted form of (widgetDir & "last-switch")
+	try
+		do shell script debounce
+	on error errMsg number errNum
+		if errNum is 200 then return
+		my silentNote(errMsg)
+		return
+	end try
 	set shortTTY to ""
 	set tabTitle to ""
 	try
@@ -14,18 +29,17 @@ on run
 			set frontName to name of first application process whose frontmost is true
 		end tell
 		if frontName is not "Terminal" then
-			my reportError("Click the stuck AI tab in Terminal.app, then press ⌘⇧S again." & return & return & "(⌘⇧S only works when Terminal is the front app — not Cursor or the browser.)")
 			return
 		end if
 		tell application "Terminal"
 			if (count of windows) is 0 then
-				my reportError("Open Terminal on the stuck AI tab first, then press ⌘⇧S.")
+				my silentNote("Open Terminal on the stuck AI tab, then press ⌘⇧S.")
 				return
 			end if
 			set selTab to selected tab of front window
 			set rawTTY to tty of selTab
 			if rawTTY is missing value then
-				my reportError("Could not read this tab's TTY. Click the stuck tab and try ⌘⇧S again.")
+				my silentNote("Could not read this tab — click the stuck tab and try ⌘⇧S again.")
 				return
 			end if
 			set shortTTY to text 6 thru -1 of rawTTY
@@ -37,18 +51,13 @@ on run
 		end tell
 	on error errMsg number errNum
 		if errNum is -128 then return
-		my reportError(errMsg)
+		my silentNote(errMsg)
 		return
 	end try
-	if shortTTY is "" then
-		my reportError("Could not read the front Terminal tab. Click the stuck tab and press ⌘⇧S again.")
-		return
-	end if
-	set widgetDir to home & ".skeptic-widget"
-	do shell script "/bin/mkdir -p " & quoted form of widgetDir
+	if shortTTY is "" then return
 	do shell script "/usr/bin/printf %s " & quoted form of shortTTY & " > " & quoted form of (widgetDir & "hint-tty")
 	do shell script "/usr/bin/printf %s " & quoted form of tabTitle & " > " & quoted form of (widgetDir & "hint-title")
 	set skeptic to quoted form of (home & ".local/bin/skeptic")
-	set cmd to "export SKEPTIC_HINT_TTY=" & quoted form of shortTTY & "; export SKEPTIC_HINT_TITLE=" & quoted form of tabTitle & "; " & skeptic
+	set cmd to "export SKEPTIC_HOTKEY=1; export SKEPTIC_HINT_TTY=" & quoted form of shortTTY & "; export SKEPTIC_HINT_TITLE=" & quoted form of tabTitle & "; " & skeptic
 	do shell script cmd
 end run
