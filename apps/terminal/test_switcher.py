@@ -55,6 +55,19 @@ class SwitchTests(unittest.TestCase):
         self.assertEqual(calls, [(str(self.vault), 'vault')])
         self.assertIn('Vault-root session', summary['git']['limitation'])
 
+    def test_continue_at_vault_root_without_session_skips_repository_grant(self):
+        original = self.state.grant
+        calls = []
+        def grant(path, kind):
+            calls.append((path, kind))
+            if kind == 'repository':
+                self.fail('brain vault root must not be a repository grant')
+            return original(path, kind)
+        with patch.object(self.state, 'grant', side_effect=grant), patch('builtins.input', return_value='approve'):
+            summary, _ = s.assemble(self.state, str(self.vault), str(self.vault))
+        self.assertEqual(calls, [(str(self.vault), 'vault')])
+        self.assertIn('Vault-root session', summary['git']['limitation'])
+
     def test_symlinked_vault_path_is_still_the_vault(self):
         # live_sessions emits the vault's real path; ~/brain may be a symlink.
         link = Path(self.tmp.name) / 'brain-link'; link.symlink_to(self.vault)
@@ -65,14 +78,18 @@ class SwitchTests(unittest.TestCase):
 
     def test_busy_writer_stops_before_handoff_review(self):
         import fcntl
-        from types import SimpleNamespace
         fd = os.open('continuation-writer.lock', os.O_RDWR | os.O_CREAT, 0o600, dir_fd=self.state.fd)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            with patch('sys.stdin.isatty', return_value=True), patch('sys.stdout.isatty', return_value=True), patch.object(s, 'select_provider', side_effect=AssertionError('Review began while busy')):
-                with self.assertRaisesRegex(s.host.Denied, 'writer is active'):
-                    s.launch_recovery(SimpleNamespace(widget_switch=False), self.state, None, None, None, None, None, None, None, None)
-        finally: os.close(fd)
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop('SKEPTIC_HINT_TTY', None)
+            entered = []
+            with self.assertRaisesRegex(s.host.Denied, 'handoff is launching'):
+                with s.writer_reservation(self.state):
+                    entered.append(True)
+            self.assertEqual(entered, [])
+        finally:
+            os.close(fd)
 
     def test_current_directory_repository(self):
         folder = self.repo / 'src'; folder.mkdir()
@@ -107,6 +124,23 @@ class SwitchTests(unittest.TestCase):
         self.status.write_text('# Atlas\n## Current State\nUnknown')
         with patch('sys.stdin.isatty', return_value=False): summary, _ = self.packet()
         self.assertIsNone(summary['knowledge'])
+
+    def test_trusted_handoff_skips_vault_picker(self):
+        self.status.write_text('# Atlas\n## Current State\nUnknown')
+        self.state.trust_session_context = True
+        picked = []
+        summary, _ = self.packet(picker=lambda title, options: picked.append((title, options)) or 0)
+        self.assertFalse(picked)
+        self.assertIsNone(summary['knowledge'])
+
+    def test_realpath_vault_match(self):
+        linked = self.repo / 'link-target'
+        linked.mkdir()
+        self.status.write_text(
+            '---\npaths:\n  - ' + str(linked) + '\n---\n# Atlas\n## Handoff\nOK\n'
+        )
+        summary, _ = self.packet()
+        self.assertEqual(summary['knowledge'], str(self.project))
 
     def test_no_vault(self):
         summary, packet = s.assemble(self.state, str(self.repo), str(self.root / 'missing'))
@@ -292,24 +326,105 @@ class SwitchTests(unittest.TestCase):
             s.launch(hermes, str(self.repo), 'PACKET', run=lambda *a, **k: self.fail('ran'), scratch=self.root / 'handoffs2')
         self.assertEqual(list((self.root / 'handoffs2').iterdir()), [])
 
+    def test_terminal_handoff_intro_shows_context(self):
+        with patch.dict(os.environ, {'SKEPTIC_HINT_TTY': 'ttys009', 'SKEPTIC_HINT_TITLE': 'Atlas fixes'}, clear=False), patch.object(s.sys.stdout, 'isatty', return_value=True):
+            os.environ.pop('NO_COLOR', None)
+            text = s.terminal_intro(hotkey=True)
+        self.assertIn('SKEPTIC', text)
+        self.assertIn('session handoff', text)
+        self.assertIn('ttys009', text)
+        self.assertIn('Atlas fixes', text)
+
+    def test_ink_bar_uses_brand_when_tty(self):
+        with patch.object(s.sys.stdout, 'isatty', return_value=True):
+            os.environ.pop('NO_COLOR', None)
+            row = s.ink_bar('SKEPTIC · test', 40)
+        self.assertIn('SKEPTIC', row)
+        if s._brand_color_ok():
+            self.assertIn('\033[1;97;40m', row)
+            self.assertNotIn('[48;2;', row)
+
+    def test_format_picker_row_preserves_ansi(self):
+        row = s.format_picker_row('\033[1;97;40m SKEPTIC \033[0m', 80)
+        self.assertIn('\033[1;97;40m', row)
+        self.assertNotIn('[48;2;', row)
+
+    def test_handoff_picker_header_no_truecolor(self):
+        with patch.object(s.sys.stdout, 'isatty', return_value=True), patch.dict(
+                os.environ, {'SKEPTIC_HINT_TTY': 'ttys014', 'SKEPTIC_HINT_TITLE': 'Codex work'}, clear=False):
+            os.environ.pop('NO_COLOR', None)
+            lines = s.handoff_picker_header('Choose engine', 80, s.sys.stdout)
+        blob = '\n'.join(lines)
+        self.assertIn('SKEPTIC', blob)
+        self.assertNotIn('[48;2;', blob)
+        self.assertNotIn('[38;2;', blob)
+
+    def test_close_source_tab_default_on_for_hotkey(self):
+        with patch.dict(os.environ, {'SKEPTIC_HINT_TTY': 'ttys002'}, clear=False):
+            self.assertTrue(s.close_source_tab_ok())
+        with patch.dict(os.environ, {'SKEPTIC_HINT_TTY': 'ttys002', 'SKEPTIC_CLOSE_SOURCE_TAB': '0'}, clear=False):
+            self.assertFalse(s.close_source_tab_ok())
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('SKEPTIC_HINT_TTY', None)
+            self.assertFalse(s.close_source_tab_ok())
+
+    def test_close_stuck_tab_skips_picker_tty(self):
+        run = lambda *a, **k: self.fail('osascript ran')
+        with patch.object(s, 'context_tty', return_value='ttys002'):
+            self.assertFalse(s.close_stuck_terminal_tab('ttys002', run=run))
+
+    def test_close_stuck_tab_calls_applescript(self):
+        seen = []
+        def run(argv, **kw):
+            seen.append(argv)
+            return subprocess.CompletedProcess(argv, 0, 'closed\n', '')
+        self.assertTrue(s.close_stuck_terminal_tab('ttys009', run=run))
+        self.assertEqual(seen[0][-1], 'ttys009')
+
+    def test_offer_close_stuck_tab_waits_then_confirms(self):
+        proc = subprocess.Popen(['/bin/sleep', '0.3'])
+        self.addCleanup(lambda: proc.poll() or proc.kill())
+        with patch.dict(os.environ, {'SKEPTIC_HINT_TTY': 'ttys009'}, clear=False), patch.object(s, 'context_tty', return_value='ttys002'), patch.object(s, 'provider_spawned_ok', return_value=True), patch('widget_switch.confirm_close_source', return_value=True), patch.object(s, 'close_stuck_terminal_tab', return_value=True):
+            self.assertTrue(s.offer_close_stuck_tab(proc, {'id': 'codex', 'label': 'Codex'}, 'Atlas'))
+
+    def test_continue_argv_adds_widget_on_hotkey(self):
+        with patch.dict(os.environ, {'SKEPTIC_HINT_TTY': 'ttys002'}):
+            self.assertEqual(s.continue_argv(['session', 'continue', '--with', 'codex']), ['session', 'continue', '--with', 'codex', '--widget-switch'])
+        self.assertEqual(s.continue_argv(['session', 'continue', '--with', 'codex', '--widget-switch']), ['session', 'continue', '--with', 'codex', '--widget-switch'])
+
+    def test_switch_open_session_defaults_to_this_tty(self):
+        here = {'tty': 'ttys002', 'label': 'Stuck tab', 'project': 'beta', 'agent': 'Claude Code', 'verdict': 'ready',
+                'continue_command': ['skeptic', 'session', 'continue', '--id', 'k', '--with', 'codex'],
+                'destinations': ['codex', 'cursor', 'antigravity', 'hermes']}
+        other = dict(here, tty='ttys001', label='Other')
+        asked, ran = [], []
+        def choose_fn(title, options):
+            asked.append((title, options))
+            return 0
+        with patch.object(s, 'context_tty', return_value='ttys002'), patch.object(s.sys.stdin, 'isatty', return_value=True), patch.object(s.sys.stdout, 'isatty', return_value=True), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(s.switch_open_session(rows=[other, here], choose_fn=choose_fn, run=lambda a: ran.append(a) or 0), 0)
+        self.assertEqual(len(asked), 1)
+        self.assertIn('session handoff', asked[0][0].lower())
+        self.assertEqual(ran, [['session', 'continue', '--id', 'k', '--with', 'codex']])
+
     def test_switch_one_open_session_by_tab_then_engine(self):
         keep = {'tty': 'ttys001', 'label': 'Keep for later', 'project': 'beta', 'agent': 'Claude Code', 'activity': 'idle', 'verdict': 'ready',
-                'continue_command': ['skeptic', 'session', 'continue', '--id', 'k', '--with', 'codex'], 'destinations': ['codex', 'hermes']}
+                'continue_command': ['skeptic', 'session', 'continue', '--id', 'k', '--with', 'codex'], 'destinations': ['codex', 'cursor', 'antigravity', 'hermes']}
         move = dict(keep, tty='ttys002', label='Move this one', continue_command=['skeptic', 'session', 'continue', '--id', 'm', '--with', 'codex'], continue_cwd=str(self.repo))
         busy = dict(keep, tty='ttys003', label='Busy one', verdict='wait', activity='working', continue_command=None, blocked_reasons=['Source is working'])
         asked, ran = [], []
-        picks = iter([1, 1])  # second session, second engine
+        picks = iter([1, 3])  # second session, Hermes (last in engine order)
         self.addCleanup(os.chdir, os.getcwd())
         def choose_fn(title, options): asked.append((title, options)); return next(picks)
-        with contextlib.redirect_stdout(io.StringIO()):
+        with patch.object(s.sys.stdin, 'isatty', return_value=True), patch.object(s.sys.stdout, 'isatty', return_value=True), contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(s.switch_open_session(rows=[busy, move, keep], choose_fn=choose_fn, run=lambda a: ran.append(a) or 0), 0)
-        self.assertEqual(asked[0][1][1], '2. Move this one — Claude Code, can switch')  # tab order: ttys001 first
+        self.assertEqual(asked[0][1][1], 'Move this one · Claude Code · beta · ready')
         self.assertEqual(ran, [['session', 'continue', '--id', 'm', '--with', 'hermes']])
         picks = iter([2])
-        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        with patch.object(s.sys.stdin, 'isatty', return_value=True), patch.object(s.sys.stdout, 'isatty', return_value=True), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(s.switch_open_session(rows=[busy, move, keep], choose_fn=lambda t, o: next(picks), run=lambda a: self.fail('ran')), 2)
         odd = {'tty': 'ttys009', 'verdict': 'ready', 'continue_command': ['skeptic', 'continue']}  # no label, activity or --with
-        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        with patch.object(s.sys.stdin, 'isatty', return_value=True), patch.object(s.sys.stdout, 'isatty', return_value=True), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(s.switch_open_session(rows=[odd], choose_fn=lambda t, o: 0, run=lambda a: self.fail('ran')), 2)
 
     def test_state_symlink_refused(self):
@@ -329,7 +444,7 @@ class SwitchTests(unittest.TestCase):
 
     def test_malformed_local_models_degrade(self):
         for value in ([], {'models': 'invalid'}, {'models': ['invalid']}, {'data': None}):
-            self.assertEqual(len(s.providers(which=lambda p: '/fake/' + p, fetch=lambda url: value)), 3)  # claude, codex, hermes; no local models
+            self.assertEqual(len(s.providers(which=lambda p: '/fake/' + p, fetch=lambda url: value)), 5)  # cloud providers; no local models
 
     def test_checkpoint_survives_many_large_instructions(self):
         (self.vault / 'AGENTS.md').write_text('Governing instructions ' * 1000)
@@ -342,7 +457,7 @@ class SwitchTests(unittest.TestCase):
 
     def test_local_provider_failure_degrades(self):
         def fail(url): raise OSError('Unavailable')
-        self.assertEqual(len(s.providers(which=lambda p: '/fake/' + p, fetch=fail)), 3)  # claude, codex, hermes
+        self.assertEqual(len(s.providers(which=lambda p: '/fake/' + p, fetch=fail)), 5)
 
     def test_safe_launch_both_directions_and_failure(self):
         calls = []

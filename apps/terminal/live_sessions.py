@@ -123,11 +123,28 @@ def hermes(agent, home, started, now):
     return row
 
 
+def jsonl_first_line(fd, max_bytes=512 * 1024):
+    chunks, size = [], 0
+    while size < max_bytes:
+        block = os.read(fd, min(65536, max_bytes - size))
+        if not block:
+            break
+        chunks.append(block)
+        size += len(block)
+        if b'\n' in block:
+            break
+    data = b''.join(chunks)
+    line, _, _ = data.partition(b'\n')
+    if not line:
+        raise ValueError('Empty rollout file')
+    return line
+
+
 def jsonl_view(path, sid):
     fd, info = safe_file(path)
     try:
-        head = os.pread(fd, min(info.st_size, 16384), 0)
-        first = json.loads(head.split(b'\n')[0])
+        first_line = jsonl_first_line(fd)
+        first = json.loads(first_line)
         if first.get('type') != 'session_meta' or first.get('payload', {}).get('id') != sid: raise ValueError('Session identity mismatch')
         start = max(0, info.st_size - LIMIT)
         tail = os.pread(fd, LIMIT, start).splitlines()
@@ -152,7 +169,7 @@ def jsonl_view(path, sid):
             except (ValueError, TypeError): activity = 'unknown'
         return {'task':task or 'Task outside bounded tail; review conversation', 'activity':activity,
                 'activity_evidence':'Codex explicit turn events' if activity != 'unknown' else 'No fresh explicit Codex turn marker',
-                'turn_marker':turn, 'receipt':hashlib.sha256(head + b'\n'.join(tail)).hexdigest()}
+                'turn_marker':turn, 'receipt':hashlib.sha256(first_line + b'\n'.join(tail)).hexdigest()}
     finally: os.close(fd)
 
 
@@ -188,25 +205,72 @@ def codex_turn(home, sid):
     return result
 
 
-def codex(agent, home, started, links):
+def process_cwd(pid):
+    try:
+        out = subprocess.run(['/usr/sbin/lsof', '-a', '-p', str(pid), '-d', 'cwd', '-Fn'],
+                             capture_output=True, text=True, timeout=3)
+        for line in (out.stdout or '').splitlines():
+            if line.startswith('n') and line[1:].startswith('/'):
+                return line[1:]
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return None
+
+
+def codex_infer_meta(agent, home):
+    """Best-effort Codex thread for this live process when no owner link exists."""
+    cwd = process_cwd(agent['pid'])
+    if not cwd:
+        return None
+    pool = [c for c in codex_candidates(home) if (c.get('cwd') or '') == cwd]
+    if not pool:
+        return None
+    pool.sort(key=lambda c: c.get('updated_at') or 0, reverse=True)
+    best = pool[0]
+    if len(pool) > 1:
+        recent = best.get('updated_at') or 0
+        runner = pool[1].get('updated_at') or 0
+        if recent and runner and abs(recent - runner) < 300000:
+            return None
+    path = Path(best.get('rollout_path') or '')
+    if home / '.codex/sessions' not in path.parents:
+        return None
+    return best
+
+
+def codex_row(agent, home, started, meta, association):
     row = base(agent)
-    candidates = codex_candidates(home)
-    link = links.get(str(agent['pid']), {})
-    if not same_birth(link.get('birth'), started): return row
-    matches = [c for c in candidates if c['id'] == link.get('session_id')]
-    if len(matches) != 1: return row
-    meta = matches[0]; path = Path(meta['rollout_path'])
-    if home / '.codex/sessions' not in path.parents: return row
+    path = Path(meta['rollout_path'])
     view = jsonl_view(path, meta['id'])
-    try: view.update(codex_turn(home,meta['id']))
-    except (OSError,ValueError,sqlite3.Error): pass
+    try:
+        view.update(codex_turn(home, meta['id']))
+    except (OSError, ValueError, sqlite3.Error):
+        pass
     updated = meta.get('updated_at')
     row['last_active'] = (updated / 1000 if updated > 1e11 else updated) if isinstance(updated, (int, float)) else None
-    row.update(view); row.update(id='codex:'+meta['id']+':'+str(agent['pid']),session_id=meta['id'],title=clean(meta['title']),cwd=meta['cwd'] or '',
-                                model=clean(meta['model']) or 'unknown',association='owner-confirmed (not automatically verified)',source='codex',source_path=str(path))
-    # A manual link cannot prove this process stayed in the same conversation.
-    row['activity_evidence'] += '; selected conversation only, live window association requires review'
+    row.update(view)
+    row.update(id='codex:' + meta['id'] + ':' + str(agent['pid']), session_id=meta['id'], title=clean(meta['title']),
+               cwd=meta['cwd'] or '', model=clean(meta['model']) or 'unknown', association=association,
+               source='codex', source_path=str(path))
+    row['activity_evidence'] += '; live Codex window association still requires review'
     return row
+
+
+def codex(agent, home, started, links):
+    row = base(agent)
+    link = links.get(str(agent['pid']), {})
+    meta = None
+    if same_birth(link.get('birth'), started):
+        matches = [c for c in codex_candidates(home) if c['id'] == link.get('session_id')]
+        if len(matches) == 1:
+            meta = matches[0]
+            association = 'owner-confirmed (not automatically verified)'
+    if meta is None:
+        meta = codex_infer_meta(agent, home)
+        association = 'inferred from Codex metadata and process working directory'
+    if meta is None:
+        return row
+    return codex_row(agent, home, started, meta, association)
 
 
 def claude_task(path, sid, with_cwd=False):
@@ -307,20 +371,179 @@ def repo_root(path):
     return None
 
 
-DESTINATION = {'claude': 'codex', 'codex': 'claude', 'hermes': 'codex'}
-NAMES = {'claude': 'Claude', 'codex': 'Codex', 'hermes': 'Hermes'}
+ALL_DESTINATIONS = ('codex', 'cursor', 'antigravity', 'claude', 'hermes')
+DESTINATION = {'claude': 'codex', 'codex': 'claude', 'hermes': 'codex', 'cursor': 'codex', 'antigravity': 'codex',
+               'terminal': 'codex'}
+NAMES = {'claude': 'Claude', 'codex': 'Codex', 'hermes': 'Hermes', 'cursor': 'Cursor', 'antigravity': 'Antigravity',
+         'terminal': 'Terminal tab'}
+AGENT_PRIORITY = {'Claude Code': 0, 'Codex': 1, 'Hermes': 2, 'Cursor Agent': 3, 'Antigravity': 4}
+AGENT_SOURCE = {'Claude Code': 'claude', 'Codex': 'codex', 'Hermes': 'hermes', 'Cursor Agent': 'cursor',
+                'Antigravity': 'antigravity'}
 
 
 def continue_command(row, project):
     """argv for the skeptic CLI that continues this conversation elsewhere.
-    The CLI re-checks the session and asks for any approval it needs."""
-    dest = DESTINATION.get(row['source'])
-    if not dest or not project: return None
+    The CLI re-checks the session and asks for every approval it needs."""
+    vault = str(Path.home() / 'brain')
+    dest = DESTINATION.get(row.get('source'), 'codex')
+    if not project: return None
     if row['source'] == 'claude' and row.get('session_id'):
         return ['skeptic', 'session', 'continue', '--project', project, '--id', row['session_id'], '--cwd', project, '--with', dest, '--widget-switch']
     if row['source'] == 'codex' and row.get('source_path'):
         return ['skeptic', 'session', 'continue', '--source', 'codex', '--session-file', row['source_path'], '--cwd', project, '--with', dest, '--widget-switch']
-    return ['skeptic', 'continue', '--with', dest]
+    task = clean(row.get('task') or row.get('label') or row.get('tab_title') or 'Continue work from this Terminal tab')
+    return ['skeptic', 'continue', '--cwd', project, '--vault', vault, '--task', task, '--with', dest, '--widget-switch']
+
+
+def shell_pid_on_tty(tty):
+    try:
+        out = subprocess.run(['/bin/ps', '-axo', 'pid=,tty=,comm='], capture_output=True, text=True, timeout=3, check=True).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    shells = []
+    for line in out.splitlines():
+        parts = line.strip().split(None, 2)
+        if len(parts) != 3:
+            continue
+        pid_s, term, comm = parts
+        if term != tty or not pid_s.isdigit():
+            continue
+        if Path(comm).name in ('zsh', 'bash', 'fish', 'sh', 'login', '-zsh', '-bash'):
+            shells.append(int(pid_s))
+    return shells[-1] if shells else None
+
+
+def enrich_agent_row(agent, home, links):
+    started = birth(agent['pid'])
+    if agent['agent'] == 'Hermes':
+        return hermes(agent, home, started, time.time())
+    if agent['agent'] == 'Codex':
+        return codex(agent, home, started, links)
+    if agent['agent'] == 'Claude Code':
+        return claude(agent, home, started)
+    cwd = process_cwd(agent['pid'])
+    source = AGENT_SOURCE.get(agent['agent'], 'terminal')
+    row = base(agent)
+    row.update(source=source, cwd=cwd or '', work_cwd=cwd or '', activity='unknown',
+               association='this Terminal tab (⌘⇧S)', task='Continue work from this Terminal tab',
+               activity_evidence='Tab-scoped handoff; conversation binding not required')
+    return row
+
+
+USAGE_SOURCE = {'claude': 'claude', 'codex': 'codex', 'cursor': 'cursor', 'antigravity': 'antigravity',
+                'hermes': 'hermes'}
+
+
+def needs_active_handoff_confirm(row, hint_title=''):
+    """True when this tab's agent looks mid-turn — show quota + confirm before switching."""
+    if row.get('frozen'):
+        return False
+    title = (hint_title or row.get('tab_title') or row.get('label') or '').lower()
+    if 'session handoff' in title:
+        return False
+    if row.get('source') == 'terminal' and row.get('activity') in ('idle', 'unknown', None):
+        return False
+    if row.get('activity') != 'working':
+        return False
+    if row.get('source') in ('terminal',) and not row.get('session_id') and not row.get('source_path'):
+        return False
+    return True
+
+
+def usage_hint_for_row(row):
+    engine = USAGE_SOURCE.get(row.get('source') or '')
+    if not engine:
+        return None
+    try:
+        import usage_picker
+        return usage_picker._line(engine, usage_picker._load_collect())
+    except Exception:
+        return None
+
+
+def assess_handoff_row(row, peers):
+    """⌘⇧S: hand off this tty's context — not blocked by unlinked / unknown agent labels."""
+    work = row.get('work_cwd') or row.get('cwd')
+    project = repo_root(work)
+    vault = os.path.realpath(Path.home() / 'brain')
+    from_notes = not project and row.get('source') in ('claude', 'codex', 'terminal') and repo_root(vault) == vault
+    if from_notes:
+        project = vault
+    row['project_root'] = project
+    row['project'] = (Path(project).name + ' (your notes)' if from_notes else Path(project).name) if project else (
+        'Home; no repository yet' if work and os.path.realpath(work) == os.path.realpath(Path.home()) else 'Project unknown')
+    blockers = []
+    frozen = row.get('frozen')
+    if row.get('queued_turns'):
+        blockers.append('Codex has queued continuation; resolve it before handoff')
+    if row.get('automation_pending'):
+        blockers.append(row.get('automation_evidence', 'Automatic continuation needs review'))
+    if not project and repo_root(vault) == vault:
+        project = vault
+        from_notes = True
+        row['project'] = Path(vault).name + ' (your notes)'
+    elif not project:
+        blockers.append('No repository in the session\'s current directory')
+    busy_peers = [r for r in peers if r is not row and project and repo_root(r.get('work_cwd') or r.get('cwd')) == project
+                  and r.get('activity') == 'working' and not r.get('frozen')]
+    if busy_peers:
+        blockers.append('Another agent is working in this repository; wait or pick one writer')
+    name = NAMES.get(row.get('source'), row.get('agent', 'session'))
+    dest = NAMES.get(DESTINATION.get(row.get('source'), 'codex'), 'another engine')
+    if not blockers:
+        headline = f'{name} on this tab; {dest} can pick up {row["project"]}' if frozen else f'This tab → {dest} for {row["project"]}'
+        row.update(readiness='ready', verdict='ready', headline=headline,
+                   next_step=f'Continue in {dest}', continue_command=continue_command(row, project),
+                   continue_cwd=project)
+        src = row.get('source') or ''
+        row['destinations'] = [d for d in ALL_DESTINATIONS if d != src]
+    else:
+        row.update(readiness='blocked', verdict='wait', headline=blockers[0], next_step=blockers[0],
+                   continue_command=None, blocked_reasons=blockers)
+    return row
+
+
+def handoff_row_for_tty(hint_tty, hint_title, peers, home=None):
+    """Build a handoff row for the Terminal tab that launched ⌘⇧S (tty + title)."""
+    home = Path(home) if home else Path.home()
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('inventory', Path(__file__).with_name('live_inventory.py'))
+        inventory = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(inventory)
+        inv = inventory.collect()
+    except (OSError, ImportError, ValueError):
+        inv = {'agents': []}
+    try:
+        links = read_json(home / '.skeptic-widget/session-links.json')
+    except (OSError, ValueError, TypeError):
+        links = {}
+    agents = sorted([a for a in inv.get('agents', []) if a.get('tty') == hint_tty],
+                    key=lambda a: AGENT_PRIORITY.get(a.get('agent'), 9))
+    row = None
+    for agent in agents:
+        try:
+            candidate = enrich_agent_row(agent, home, links)
+        except (OSError, ValueError, TypeError, KeyError, sqlite3.Error, subprocess.SubprocessError):
+            continue
+        if candidate.get('session_id') or candidate.get('source_path'):
+            row = candidate
+            break
+        if row is None:
+            row = candidate
+    if row is None:
+        shell = shell_pid_on_tty(hint_tty)
+        cwd = process_cwd(shell) if shell else None
+        row = base({'pid': shell or 0, 'tty': hint_tty, 'agent': 'Terminal tab'})
+        row.update(source='terminal', cwd=cwd or '', work_cwd=cwd or '', activity='idle',
+                   association='this Terminal tab (⌘⇧S)', task='Continue work from this Terminal tab',
+                   activity_evidence='Shell working directory only')
+    if hint_title:
+        row['tab_title'] = clean(hint_title)
+        if hint_title not in ('', 'Terminal', 'bash', 'zsh'):
+            row['label'] = clean(hint_title)
+    assess_handoff_row(row, peers)
+    return row
 
 
 def assess(rows):
@@ -354,7 +577,7 @@ def assess(rows):
             headline = f'{name} looks frozen ({frozen}); {dest} can pick up {row["project"]}' if frozen else f'{dest} can pick up {row["project"]}'
             row.update(readiness='ready', verdict='ready', headline=headline,
                        next_step=f'Continue in {dest}', continue_command=continue_command(row, project))
-            row['destinations'] = [d for d in ('codex', 'hermes', 'claude') if d != row['source']]
+            row['destinations'] = [d for d in ALL_DESTINATIONS if d != row['source']]
         elif row['activity'] == 'working':
             row.update(readiness='blocked', verdict='wait', headline=f'{name} is mid-turn', next_step='Wait for this turn to finish', continue_command=None)
         elif row.get('automation_pending') or row.get('queued_turns'):
@@ -393,6 +616,46 @@ end repeat
 end repeat
 return out
 end tell'''
+
+
+def resolve_handoff_row(rows, hint_tty, titles=None, hint_title=None):
+    """Map the tab that launched ⌘⇧S to one live agent row."""
+    if not hint_tty or not re.fullmatch(r'ttys[0-9]{3,4}', hint_tty):
+        return None
+    titles = titles if titles is not None else terminal_titles()
+    matches = [r for r in rows if r.get('tty') == hint_tty]
+    if len(matches) == 1 and matches[0].get('continue_command'):
+        return matches[0]
+
+    def title_match(needle, pool):
+        if not needle:
+            return []
+        n = clean(needle).lower()
+        if not n:
+            return []
+        out = []
+        for r in pool:
+            label = clean(r.get('label') or '').lower()
+            tab_title = clean(r.get('tab_title') or '').lower()
+            if n in label or label in n or n in tab_title or tab_title in n:
+                out.append(r)
+        return out
+
+    if hint_title:
+        titled = title_match(hint_title, matches)
+        if len(titled) == 1:
+            return titled[0]
+        ready = [r for r in titled if r.get('continue_command')]
+        if len(ready) == 1:
+            return ready[0]
+
+    tab = clean(titles.get(hint_tty, '') or hint_title or '')
+    if tab:
+        ready = title_match(tab, [r for r in rows if r.get('continue_command')])
+        if len(ready) == 1:
+            return ready[0]
+    ready = [r for r in rows if r.get('tty') == hint_tty and r.get('continue_command')]
+    return ready[0] if len(ready) == 1 else None
 
 
 def tab_label(title):

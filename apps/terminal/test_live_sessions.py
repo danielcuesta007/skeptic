@@ -133,7 +133,7 @@ class VerdictTests(ClaudeFixture):
         self.assertEqual(row['project'], 'atlas'); self.assertEqual(row['verdict'], 'ready')
 
     def test_ready_rows_offer_every_other_engine(self):
-        self.assertEqual(self.collect()[0]['destinations'], ['codex', 'hermes'])
+        self.assertEqual(self.collect()[0]['destinations'], ['codex', 'cursor', 'antigravity', 'hermes'])
 
     def test_session_named_by_its_terminal_tab(self):
         self.titles = {'ttys001': 'Atlas importer'}
@@ -167,6 +167,40 @@ class VerdictTests(ClaudeFixture):
         self.assertIsNone(live.repo_root(str(self.home)))
         self.assertEqual(live.repo_root(str(self.repo / 'src')), str(self.repo))
         with patch.object(live.subprocess, 'run', side_effect=AssertionError('git executed')): live.repo_root(str(self.repo))
+
+
+class HandoffTabTests(unittest.TestCase):
+    def test_active_confirm_only_when_working_agent(self):
+        working = {'activity': 'working', 'source': 'codex', 'frozen': None}
+        idle_tab = {'activity': 'idle', 'source': 'terminal', 'agent': 'Terminal tab'}
+        picker = {'activity': 'idle', 'source': 'codex'}
+        self.assertTrue(live.needs_active_handoff_confirm(working, 'Addisuna work'))
+        self.assertFalse(live.needs_active_handoff_confirm(idle_tab, ''))
+        self.assertFalse(live.needs_active_handoff_confirm(picker, 'Skeptic · Session Handoff'))
+        self.assertFalse(live.needs_active_handoff_confirm({**working, 'frozen': 'usage limit'}))
+
+    def test_handoff_row_from_tty_uses_tab_not_link_table(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            row = live.handoff_row_for_tty('ttys099', 'My feature tab', [], home=home)
+        self.assertEqual(row.get('tty'), 'ttys099')
+        self.assertEqual(row.get('association'), 'this Terminal tab (⌘⇧S)')
+
+
+class HandoffResolveTests(unittest.TestCase):
+    def test_hint_title_disambiguates_same_tty(self):
+        rows = [
+            {'tty': 'ttys001', 'label': 'Widget spacing', 'continue_command': ['skeptic', 'session', 'continue', '--id', 'a']},
+            {'tty': 'ttys001', 'label': 'Other work', 'continue_command': None},
+        ]
+        self.assertIs(live.resolve_handoff_row(rows, 'ttys001', titles={}, hint_title='◐ Widget spacing fixes'), rows[0])
+
+    def test_single_ready_on_tty(self):
+        rows = [
+            {'tty': 'ttys002', 'label': 'Only', 'continue_command': ['go']},
+            {'tty': 'ttys003', 'label': 'Elsewhere', 'continue_command': ['go']},
+        ]
+        self.assertIs(live.resolve_handoff_row(rows, 'ttys002', titles={}), rows[0])
 
 
 class HermesTests(unittest.TestCase):

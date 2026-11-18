@@ -78,7 +78,8 @@ class Access:
             atomic_json(self.state, 'sessions.json', self.data)
             stored = identity
         if stored != identity and self.selected and not self.force_prompt and key.startswith(('transcript:', 'metadata-file:')):
-            print('Reading this conversation: you selected it in the widget. Revoke with: skeptic sessions revoke')
+            if not os.environ.get('SKEPTIC_HINT_TTY'):
+                print('Reading this conversation: you selected it in the widget. Revoke with: skeptic sessions revoke')
             self.data['grants'][key] = identity
             atomic_json(self.state, 'sessions.json', self.data)
             stored = identity

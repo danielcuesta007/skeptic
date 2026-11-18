@@ -1,0 +1,54 @@
+#!/usr/bin/osascript
+-- ⌘⇧S: capture the selected Terminal tab, then open a new tab running the handoff picker.
+
+on reportError(theMsg)
+	display dialog theMsg with title "Skeptic · Session Handoff" buttons {"OK"} default button "OK" with icon caution
+end reportError
+
+on run
+	set home to POSIX path of (path to home folder)
+	set shortTTY to ""
+	set tabTitle to ""
+	try
+		tell application "System Events"
+			set frontName to name of first application process whose frontmost is true
+		end tell
+		if frontName is not "Terminal" then
+			my reportError("Click the stuck AI tab in Terminal.app, then press ⌘⇧S again." & return & return & "(⌘⇧S only works when Terminal is the front app — not Cursor or the browser.)")
+			return
+		end if
+		tell application "Terminal"
+			if (count of windows) is 0 then
+				my reportError("Open Terminal on the stuck AI tab first, then press ⌘⇧S.")
+				return
+			end if
+			set selTab to selected tab of front window
+			set rawTTY to tty of selTab
+			if rawTTY is missing value then
+				my reportError("Could not read this tab's TTY. Click the stuck tab and try ⌘⇧S again.")
+				return
+			end if
+			set shortTTY to text 6 thru -1 of rawTTY
+			try
+				set tabTitle to custom title of selTab
+			on error
+				set tabTitle to ""
+			end try
+		end tell
+	on error errMsg number errNum
+		if errNum is -128 then return
+		my reportError(errMsg)
+		return
+	end try
+	if shortTTY is "" then
+		my reportError("Could not read the front Terminal tab. Click the stuck tab and press ⌘⇧S again.")
+		return
+	end if
+	set widgetDir to home & ".skeptic-widget"
+	do shell script "/bin/mkdir -p " & quoted form of widgetDir
+	do shell script "/usr/bin/printf %s " & quoted form of shortTTY & " > " & quoted form of (widgetDir & "hint-tty")
+	do shell script "/usr/bin/printf %s " & quoted form of tabTitle & " > " & quoted form of (widgetDir & "hint-title")
+	set skeptic to quoted form of (home & ".local/bin/skeptic")
+	set cmd to "export SKEPTIC_HINT_TTY=" & quoted form of shortTTY & "; export SKEPTIC_HINT_TITLE=" & quoted form of tabTitle & "; " & skeptic
+	do shell script cmd
+end run

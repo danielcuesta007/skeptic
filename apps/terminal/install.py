@@ -4,6 +4,7 @@ import hashlib
 import os
 from pathlib import Path
 import shlex
+import shutil
 import stat
 import time
 import sys
@@ -68,6 +69,8 @@ def install(home, integrations=True, profile=True, upgrade=False, launcher_too=T
                 os.lseek(fd, 0, os.SEEK_END)
                 os.write(fd, ('\n' + MARKER + '\nexport PATH="$HOME/.local/bin:$PATH"\n').encode())
         finally: os.close(fd)
+    install_handoff_dialog(home, bindir)
+    install_hotkey_widget(home, bindir, upgrade=upgrade)
     install_skills(home, integrations, upgrade)
     print('Installed: ' + str(bindir / 'skeptic'))
     print('Existing terminals: export PATH="$HOME/.local/bin:$PATH"; rehash')
@@ -80,6 +83,59 @@ def install_skills(home, integrations=True, upgrade=False):
         if integrations is not True and provider not in integrations: continue
         folder = base / 'skeptic'; safe_parent(folder)
         write_owned(folder / 'SKILL.md', (HERE / ('skeptic-' + provider + '.md')).read_text(), upgrade=upgrade)
+
+
+def install_hotkey_widget(home, bindir, upgrade=False):
+    """⌘⇧S launcher and picker tab (sources live in apps/terminal/widget/)."""
+    widget_dir = home / '.skeptic-widget'
+    widget_dir.mkdir(parents=True, exist_ok=True)
+    src = HERE / 'widget'
+    picker_src = src / 'skeptic-picker.command'
+    switch_src = src / 'skeptic-switch'
+    if not picker_src.is_file() or not switch_src.is_file():
+        return
+    picker_dst = widget_dir / 'skeptic-picker.command'
+    switch_dst = bindir / 'skeptic-switch'
+    picker_text, switch_text = picker_src.read_text(), switch_src.read_text()
+
+    def place(path, text, mode):
+        if upgrade:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+            path.chmod(mode)
+            return
+        write_owned(path, text, mode, upgrade=False)
+
+    place(picker_dst, picker_text, 0o755)
+    place(switch_dst, switch_text, 0o755)
+
+
+def install_handoff_dialog(home, bindir):
+    """Build the branded AppKit handoff sheet and install ~/.local/bin copy."""
+    build = HERE / 'handoff-dialog' / 'build.sh'
+    bundled = HERE / 'bin' / 'skeptic-handoff-dialog'
+    if build.is_file():
+        import subprocess
+        try:
+            subprocess.run(['/bin/sh', str(build)], check=True, cwd=str(build.parent), timeout=120)
+        except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired) as exc:
+            print('Handoff dialog build skipped: ' + str(exc), file=sys.stderr)
+    if not bundled.is_file():
+        return
+    target = bindir / 'skeptic-handoff-dialog'
+    data = bundled.read_bytes()
+    if target.is_file() and target.read_bytes() == data:
+        target.chmod(0o755)
+        return
+    if target.exists() and target.stat().st_size == len(data) and target.read_bytes() == data:
+        target.chmod(0o755)
+        return
+    tmp = target.with_suffix('.tmp')
+    if tmp.exists():
+        tmp.unlink()
+    shutil.copyfile(bundled, tmp)
+    tmp.chmod(0o755)
+    os.replace(tmp, target)
 
 
 def activate_launcher(home, source=HERE):

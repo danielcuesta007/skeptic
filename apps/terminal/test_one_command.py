@@ -171,15 +171,21 @@ class ContinuationTests(unittest.TestCase):
         fd=os.open('continuation-writer.lock',os.O_RDWR|os.O_CREAT,0o600,dir_fd=self.state.fd)
         try:
             fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
-            with patch.object(s,'launch',side_effect=AssertionError('Overlapping writer launched')):
-                with self.assertRaisesRegex(s.host.Denied,'writer is active'):
+            with patch.object(s,'launch_popen',side_effect=AssertionError('Overlapping writer launched')):
+                with self.assertRaisesRegex(s.host.Denied,'handoff is launching'):
                     s.tracked_launch(self.state,{},str(self.repo),'packet',str(self.vault),'task')
         finally:os.close(fd)
     def test_bare_entry_routes_to_live_continuation_without_history(self):
+        with patch.object(s,'switch_open_session',return_value=0) as pick, patch('sys.stdin.isatty', return_value=True), patch('sys.stdout.isatty', return_value=True):
+            self.assertEqual(s.main([]), 0)
+        pick.assert_called_once()
+
+    def test_bare_entry_non_tty_still_widget_open_session(self):
         with patch.object(s,'State',return_value=self.state),patch.object(self.state,'close'),patch.object(s,'session_cli',return_value=0) as entry:
-            self.assertEqual(s.main([]),0)
-        args=entry.call_args.args[0]
-        self.assertEqual((args.command,args.action,args.provider,args.continue_open),('sessions','open','codex',True))
+            with patch('sys.stdin.isatty', return_value=False), patch('sys.stdout.isatty', return_value=False), patch.dict(os.environ, {'SKEPTIC_WIDGET_OPEN': '1'}):
+                self.assertEqual(s.main([]), 0)
+        args = entry.call_args.args[0]
+        self.assertEqual((args.command, args.action, args.provider, args.continue_open), ('sessions', 'open', 'codex', True))
     def test_actual_cli_open_tab_to_fake_codex_on_pty(self):
         import pty, select, sys, time
         model,capture=self.model(); before=self.file.read_bytes()

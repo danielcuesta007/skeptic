@@ -55,7 +55,7 @@ def parse(raw, uid, python_agents=None):
   owner,pid,tty,comm=parts
   if owner!=str(uid) or not pid.isdigit() or not tty.startswith("ttys") or not tty[4:].isdigit():continue
   terminals.add(tty);name=Path(comm).name
-  agent={"claude":"Claude Code","claude-code":"Claude Code","codex":"Codex","hermes":"Hermes"}.get(name)
+  agent={"claude":"Claude Code","claude-code":"Claude Code","codex":"Codex","hermes":"Hermes","agent":"Cursor Agent","agy":"Antigravity"}.get(name)
   if "/.local/share/claude/versions/" in comm:agent="Claude Code"
   if re.fullmatch(r"python(?:[0-9]+(?:\.[0-9]+)*)?",name):
    agent=(python_agents or {}).get(int(pid))
