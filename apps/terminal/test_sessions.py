@@ -380,7 +380,7 @@ class SessionTests(unittest.TestCase):
             self.assertNotIn('RAW_EDIT_BODY', packet)
             reviewed.append(packet)
             return 'send'
-        def capture(state, provider, cwd, packet, vault, task):
+        def capture(state, provider, cwd, packet, vault, task, handoff_title=''):
             self.assertEqual(reviewed, [packet])
             self.assertEqual(cwd, str(self.repo))
             return 0

@@ -195,6 +195,9 @@ def pick_engine(engine_ids, labels, row, hint_tty='', hint_title='', run=None):
         return False
     if code == 0 and text in engine_ids:
         return text
+    # Native sheet OK but no engine id written (rare) — one OS list, not a second AppKit sheet.
+    if code == 0 and not text:
+        return pick_engine_osascript(engine_ids, labels, run=run)
     return None
 
 

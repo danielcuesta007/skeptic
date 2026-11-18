@@ -845,7 +845,7 @@ def launch_recovery(args, state, adapter, access, snapshot, cwd, task, evidence,
 
 def parallel_handoff_ok():
     """⌘⇧S picker handoffs may run in several Terminal windows at once."""
-    return bool(os.environ.get('SKEPTIC_HINT_TTY')) and os.environ.get('SKEPTIC_SERIAL_HANDOFF') != '1'
+    return hotkey_handoff() and os.environ.get('SKEPTIC_SERIAL_HANDOFF') != '1'
 
 
 def close_source_tab_ok():
@@ -944,7 +944,8 @@ def tracked_launch(state, model, cwd, packet, vault, task, handoff_title=''):
 def _tracked_launch(state, model, cwd, packet, vault, task, handoff_title=''):
     import continuity
     index = continuity.Index(state)
-    start = dict(state.observation, session=None, incoming_session=state.observation.get('session'))
+    obs = getattr(state, 'observation', None) or {}
+    start = dict(obs, session=None, incoming_session=obs.get('session'))
     continuity.warn(index.record(start, model['id'], 'launch_started'))
     try:
         with writer_reservation(state):
@@ -966,7 +967,7 @@ def _tracked_launch(state, model, cwd, packet, vault, task, handoff_title=''):
         state.no_new_grants = True
         if Path(cwd) == Path.home(): raise host.Denied('Home-started context requires an explicit selected session; home never scanned')
         assemble(state, cwd, vault, task)
-        continuity.warn(index.record(state.observation, model['id'], 'provider_exited', code))
+        continuity.warn(index.record(obs, model['id'], 'provider_exited', code))
     except (OSError, ValueError, host.Denied, subprocess.TimeoutExpired):
         continuity.warn(index.record(start, model['id'], 'provider_exited_checkpoint_unavailable', code))
         print('Post-session checkpoint unavailable; next switch will re-read approved sources.', file=sys.stderr)

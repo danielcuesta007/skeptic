@@ -173,7 +173,7 @@ class ContinuationTests(unittest.TestCase):
             fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
             with patch.object(s,'launch_popen',side_effect=AssertionError('Overlapping writer launched')):
                 with self.assertRaisesRegex(s.host.Denied,'handoff is launching'):
-                    s.tracked_launch(self.state,{},str(self.repo),'packet',str(self.vault),'task')
+                    s.tracked_launch(self.state,{'id':'codex','executable':'/bin/true','local':False},str(self.repo),'packet',str(self.vault),'task')
         finally:os.close(fd)
     def test_bare_entry_routes_to_live_continuation_without_history(self):
         with patch.object(s,'switch_open_session',return_value=0) as pick, patch('sys.stdin.isatty', return_value=True), patch('sys.stdout.isatty', return_value=True):
