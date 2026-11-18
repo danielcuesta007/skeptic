@@ -168,6 +168,7 @@ class ContinuationTests(unittest.TestCase):
         self.assertFalse(capture.exists())
 
     def test_cooperative_writer_reservation_refuses_second_launch(self):
+        self.state.observation = {'project': str(self.repo)}
         fd=os.open('continuation-writer.lock',os.O_RDWR|os.O_CREAT,0o600,dir_fd=self.state.fd)
         try:
             fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
