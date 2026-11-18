@@ -983,13 +983,44 @@ def requested_model(provider, model):
     return dict(provider, model=model, model_verification='User selected; provider will validate availability')
 
 
+def handoff_packet_path(scratch, packet):
+    folder = Path(scratch or (Path.home() / '.skeptic-cli' / 'handoffs'))
+    folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = folder / ('handoff-' + os.urandom(8).hex() + '.md')
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, 'w') as out:
+            out.write(packet)
+    except OSError:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+
+    def cleanup():
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+    return path, cleanup
+
+
 def spawn_provider_terminal(provider, cwd, packet, scratch=None):
     """Open one Terminal tab for the destination CLI (after native ⌘⇧S sheets)."""
+    packet_path, drop_packet = handoff_packet_path(scratch, packet)
     argv, cleanup = launch_argv(provider, cwd, packet, scratch=scratch)
     home = Path.home()
     folder = home / '.skeptic-widget'
     folder.mkdir(mode=0o700, parents=True, exist_ok=True)
-    inner = ' '.join(shlex.quote(a) for a in argv)
+    quoted = []
+    for part in argv:
+        if part == packet:
+            quoted.append('"$(/bin/cat ' + shlex.quote(str(packet_path)) + ')"')
+        else:
+            quoted.append(shlex.quote(part))
+    inner = ' '.join(quoted)
     body = '\n'.join([
         '#!/bin/zsh -l',
         f"printf '\\033]0;Skeptic · {clean(provider.get('label') or provider.get('id') or 'handoff')}\\007'",
@@ -1001,12 +1032,18 @@ def spawn_provider_terminal(provider, cwd, packet, scratch=None):
     path.write_text(body)
     path.chmod(0o755)
     script = 'tell application "Terminal" to do script ' + shlex.quote(str(path))
+    def finalize():
+        try:
+            cleanup()
+        finally:
+            drop_packet()
+
     try:
         subprocess.run(['/usr/bin/osascript', '-e', script], check=False, timeout=30)
     except (OSError, subprocess.SubprocessError):
-        cleanup()
+        finalize()
         raise host.Denied('Could not open Terminal for the new engine')
-    return None, cleanup
+    return None, finalize
 
 
 def launch_popen(provider, cwd, packet, scratch=None):
@@ -1427,10 +1464,18 @@ def main(argv=None):
         if hotkey_handoff() or getattr(args, 'widget_switch', False):
             state.trust_session_context = True
         if args.command == 'switch' and '--menu' not in selected_argv:
-            state.close(); state = None
-            if sys.stdout.isatty() and not hotkey_handoff():
-                print(terminal_intro(hotkey=False), end='')
-            return switch_open_session()
+            explicit_recover = bool(
+                args.session_id or args.session_root or getattr(args, 'session_file', None)
+            )
+            if explicit_recover:
+                args.command = 'session'
+                args.action = 'continue'
+                args.all_projects = not bool(args.session_id)
+            else:
+                state.close(); state = None
+                if sys.stdout.isatty() and not hotkey_handoff():
+                    print(terminal_intro(hotkey=False), end='')
+                return switch_open_session()
         if args.command == 'switch':
             args.interactive_switch = True
             if sys.stdout.isatty() and not hotkey_handoff():

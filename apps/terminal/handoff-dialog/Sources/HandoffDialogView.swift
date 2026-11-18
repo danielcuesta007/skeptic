@@ -335,7 +335,7 @@ struct HandoffDialogView: View {
     }
 
     private var footer: some View {
-        Text("A DC Labs product")
+        Text("A DC Labs™ product")
             .font(SkepticBrand.footnote)
             .foregroundStyle(SkepticBrand.grey)
             .frame(maxWidth: .infinity, alignment: .center)
