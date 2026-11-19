@@ -9,27 +9,25 @@ import widget_switch as w
 
 
 class WidgetSwitchTests(unittest.TestCase):
-    def confirm(self, result=None, error=None, native=None):
-        run = Mock(side_effect=error, return_value=result or subprocess.CompletedProcess([], 0, w.APPROVE_BUTTON + '\n', ''))
-        evidence = {'id': 'selected-uuid', 'title': 'Vitals restart', 'document': {'text': 'Latest recorded human request (completion unverified):\nwhy does cadence ask twice?\n' + 'x' * 400 + '\n[message m1; user]\nrest'}}
+    def confirm(self, answer='project-clear send', error=None):
+        run = Mock()
+        evidence = {'id': 'selected-uuid', 'title': 'Vitals restart'}
         with contextlib.redirect_stdout(io.StringIO()) as output, \
              unittest.mock.patch.object(output, 'isatty', return_value=True), \
-             unittest.mock.patch.object(w, '_dialog_binary', return_value=None):
-            approved = w.confirm({'cwd': '/project/" & do shell script "bad'}, evidence, 'Codex', 'exact packet', run=run)
+             unittest.mock.patch.object(w.sys.stdin, 'isatty', return_value=True), \
+             unittest.mock.patch.object(w, '_dialog_binary', return_value=None), \
+             unittest.mock.patch('builtins.input', return_value=answer, side_effect=error):
+            approved = w.confirm({'cwd': '/project'}, evidence, 'Codex', 'exact packet', run=run)
         return approved, run, output.getvalue()
 
-    def test_switch_approves_fallback_osascript(self):
+    def test_switch_fallback_requires_explicit_review_after_showing_packet(self):
         approved, run, output = self.confirm()
         self.assertTrue(approved)
+        run.assert_not_called()
         self.assertIn('COMPLETE FILTERED RECOVERY PACKET\nexact packet', output)
-        argv = run.call_args.args[0]
-        self.assertEqual(argv[:3], ['/usr/bin/osascript', '-e', w.SCRIPT])
-        digest = hashlib.sha256(b'exact packet').hexdigest()
-        self.assertIn(digest[:16], argv[3])
-        self.assertIn('SKEPTIC · Session Handoff', argv[3])
-        self.assertIn('Hand off to: Codex', argv[3])
-        self.assertIn('Conversation: Vitals restart', argv[3])
-        self.assertIn('Last request: why does cadence ask twice?', argv[3])
+        self.assertIn(hashlib.sha256(b'exact packet').hexdigest(), output)
+        self.assertIn('Hand off to: Codex', output)
+        self.assertIn('Conversation: Vitals restart', output)
 
     def test_native_dialog_short_circuits_osascript(self):
         run = Mock(return_value=subprocess.CompletedProcess([], 0, '', ''))
@@ -121,11 +119,12 @@ class WidgetSwitchTests(unittest.TestCase):
         self.assertEqual(captured['tabTitle'], 'Spacing fixes')
 
     def test_cancel_errors_and_unexpected_output_never_approve(self):
-        for code, output in ((1, w.APPROVE_BUTTON), (0, w.CANCEL_BUTTON), (0, ''), (0, w.APPROVE_BUTTON + ' extra')):
-            with self.subTest(code=code, output=output):
-                self.assertFalse(self.confirm(subprocess.CompletedProcess([], code, output, ''))[0])
-        for error in (OSError('unavailable'), subprocess.TimeoutExpired('osascript', 300)):
+        for answer in ('', 'send', 'project-clear', 'project-clear send extra'):
+            with self.subTest(answer=answer):
+                self.assertFalse(self.confirm(answer)[0])
+        for error in (EOFError(), KeyboardInterrupt()):
             self.assertFalse(self.confirm(error=error)[0])
+
 
 
 class ExistingWindowTests(unittest.TestCase):
