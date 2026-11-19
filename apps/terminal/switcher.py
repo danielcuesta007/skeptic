@@ -952,14 +952,13 @@ def _tracked_launch(state, model, cwd, packet, vault, task, handoff_title=''):
             proc, finalize = launch_popen(model, cwd, packet)
         if proc is None:
             finalize()
-            code = 0
-        else:
-            offer_close_stuck_tab(proc, model, handoff_title)
-            try:
-                code = proc.wait()
-            finally:
-                finalize()
-    except OSError:
+            return 0  # Terminal accepted the request. Provider exit is unobserved.
+        offer_close_stuck_tab(proc, model, handoff_title)
+        try:
+            code = proc.wait()
+        finally:
+            finalize()
+    except (OSError, host.Denied):
         continuity.warn(index.record(start, model['id'], 'launch_failed'))
         state.event('launch_failed', model['id']); raise
     try:
@@ -985,67 +984,46 @@ def requested_model(provider, model):
     return dict(provider, model=model, model_verification='User selected; provider will validate availability')
 
 
-def handoff_packet_path(scratch, packet):
-    folder = Path(scratch or (Path.home() / '.skeptic-cli' / 'handoffs'))
-    folder.mkdir(mode=0o700, parents=True, exist_ok=True)
-    path = folder / ('handoff-' + os.urandom(8).hex() + '.md')
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    try:
-        with os.fdopen(fd, 'w') as out:
-            out.write(packet)
-    except OSError:
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
-        raise
-
-    def cleanup():
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
-
-    return path, cleanup
+OPEN_DESTINATION_TAB = '''on run argv
+    set launcherPath to item 1 of argv
+    tell application "Terminal"
+        do script ("/bin/zsh -l " & quoted form of launcherPath)
+    end tell
+end run'''
 
 
 def spawn_provider_terminal(provider, cwd, packet, scratch=None):
-    """Open one Terminal tab for the destination CLI (after native ⌘⇧S sheets)."""
-    packet_path, drop_packet = handoff_packet_path(scratch, packet)
-    argv, cleanup = launch_argv(provider, cwd, packet, scratch=scratch)
-    home = Path.home()
-    folder = home / '.skeptic-widget'
-    folder.mkdir(mode=0o700, parents=True, exist_ok=True)
-    quoted = []
-    for part in argv:
-        if part == packet:
-            quoted.append('"$(/bin/cat ' + shlex.quote(str(packet_path)) + ')"')
-        else:
-            quoted.append(shlex.quote(part))
-    inner = ' '.join(quoted)
-    body = '\n'.join([
-        '#!/bin/zsh -l',
-        f"printf '\\033]0;Skeptic · {clean(provider.get('label') or provider.get('id') or 'handoff')}\\007'",
-        f'cd {shlex.quote(str(cwd))}',
-        f'exec {inner}',
-        '',
-    ])
-    path = folder / 'handoff-launch.command'
-    path.write_text(body)
-    path.chmod(0o755)
-    script = 'tell application "Terminal" to do script ' + shlex.quote(str(path))
-    def finalize():
-        try:
-            cleanup()
-        finally:
-            drop_packet()
+    """Hand a private, one-use launcher to the destination Terminal tab."""
+    from tempfile import NamedTemporaryFile
 
+    folder = Path.home() / '.skeptic-widget'
+    folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+    argv, cleanup = launch_argv(provider, cwd, packet, scratch=scratch)
+    path = None
     try:
-        subprocess.run(['/usr/bin/osascript', '-e', script], check=False, timeout=30)
-    except (OSError, subprocess.SubprocessError):
-        finalize()
-        raise host.Denied('Could not open Terminal for the new engine')
-    return None, finalize
+        with NamedTemporaryFile(mode='w', encoding='utf-8', dir=folder,
+                                prefix='handoff-', suffix='.command', delete=False) as launcher:
+            path = Path(launcher.name)
+            launcher.write('/bin/rm -f -- "$0" || exit 1\n')
+            command = 'exec ' + shlex.join(argv)
+            if provider['id'] == 'hermes':
+                query_path = argv[argv.index('--query-file') + 1]
+                remove_query = shlex.join(['/bin/rm', '-f', '--', query_path])
+                launcher.write('trap ' + shlex.quote(remove_query) + ' EXIT\n')
+                command = shlex.join(argv)
+            title = clean(provider.get('label') or provider['id'])
+            launcher.write("printf '\\033]0;%s\\007' " + shlex.quote('Skeptic · ' + title) + '\n')
+            launcher.write('cd -- ' + shlex.quote(str(cwd)) + ' || exit 1\n')
+            launcher.write(command + '\n')
+        subprocess.run(['/usr/bin/osascript', '-e', OPEN_DESTINATION_TAB, str(path)],
+                       check=True, timeout=30, capture_output=True)
+    except (OSError, subprocess.SubprocessError) as exc:
+        if path is not None:
+            path.unlink(missing_ok=True)
+        cleanup()
+        raise host.Denied('Could not open Terminal for the new engine') from exc
+    # Terminal opens the tab asynchronously. The destination shell owns cleanup.
+    return None, lambda: None
 
 
 def launch_popen(provider, cwd, packet, scratch=None):
@@ -1266,55 +1244,64 @@ def switch_open_session(rows=None, choose_fn=None, run=None):
     here = context_tty()
     title_from_hotkey = hint_tab_title()
     rows = ordered(rows if rows is not None else live_rows()[0], prefer_tty=here)
-    if not rows:
-        print('No Claude, Codex, Hermes, Cursor or Antigravity open right now.')
-        return 0
     row = None
     force_list = os.environ.get('SKEPTIC_PICK_TAB') == '1'
     hotkey = hotkey_handoff()
-    interactive = choose_fn is not choose or hotkey_handoff() or (sys.stdin.isatty() and sys.stdout.isatty())
+    headless = hotkey_headless()
+    interactive = choose_fn is not choose or hotkey or (sys.stdin.isatty() and sys.stdout.isatty())
+    narrow = [candidate for candidate in rows if here and candidate.get('tty') == here]
+
+    def pick_session(candidates):
+        labels = [compact_session_label(candidate, here) for candidate in candidates]
+        if headless and choose_fn is choose:
+            import widget_switch
+            labels = [f'{idx + 1}. {label}' for idx, label in enumerate(labels)]
+            index = widget_switch.pick_engine_osascript(
+                list(range(len(labels))), labels, prompt='Choose the Terminal session to hand off.')
+            if index is None:
+                widget_switch.handoff_error('Could not open the Terminal session picker.')
+            if index is None or index is False:
+                return None
+            return candidates[index]
+        try:
+            return candidates[choose_fn(tab_picker_title(here), labels)]
+        except KeyboardInterrupt:
+            return None
+
     if here and not force_list:
-        if hotkey:
+        if hotkey and len(narrow) <= 1:
             row = live.handoff_row_for_tty(here, title_from_hotkey, rows)
-            if row and not row.get('continue_command'):
-                row = None
-        else:
+        elif not hotkey:
             row = live.resolve_handoff_row(rows, here, hint_title=title_from_hotkey or None)
     if row is None:
+        if not rows:
+            detail = 'No Claude, Codex, Hermes, Cursor or Antigravity sessions found.'
+            if headless:
+                import widget_switch
+                widget_switch.handoff_error(detail)
+            else:
+                print(detail)
+            return 0
         if not interactive:
             print('Open a new Terminal tab (⌘T) and run: skeptic', file=sys.stderr)
             print('(Claude’s ! shell cannot show the session picker.)', file=sys.stderr)
             return 2
-        narrow = [r for r in rows if here and r.get('tty') == here]
-        pick_rows = narrow if (hotkey and narrow) else rows
-        if here:
-            if hotkey and not narrow:
-                print('Skeptic: could not match tab ' + here + (f' (“{title_from_hotkey}”)' if title_from_hotkey else '') + '. Put Terminal on the stuck tab and press ⌘⇧S again, or pick below.', file=sys.stderr)
-            elif hotkey and len(pick_rows) > 1:
-                print('Skeptic: several agents on tab ' + here + ' — pick which one to hand off.', file=sys.stderr)
-            else:
-                print('Skeptic: no ready agent on tab ' + here + ' — pick the session below (Terminal front tab must be the stuck AI tab when you press ⌘⇧S).', file=sys.stderr)
-        labels = [compact_session_label(r, here) for r in pick_rows]
-        row = pick_rows[choose_fn(tab_picker_title(here), labels)]
+        row = pick_session(narrow if hotkey and narrow and not force_list else rows)
+        if row is None:
+            return 0
     command = row.get('continue_command') or []
     if '--with' not in command[:-1]:
         reason = clean((row.get('blocked_reasons') or [row.get('next_step') or 'unknown'])[0])
-        if hotkey and here and not force_list:
-            retry = live.handoff_row_for_tty(here, title_from_hotkey, rows)
-            if retry and retry.get('continue_command'):
-                row, command = retry, retry.get('continue_command') or []
-        ready = [r for r in rows if r.get('continue_command')]
-        if '--with' not in command[:-1] and hotkey and ready:
-            print('Skeptic: tab ' + (here or '?') + ' is not ready yet (' + reason + ').', file=sys.stderr)
-            print('Pick another ready session, or fix the blocker above.', file=sys.stderr)
-            labels = [compact_session_label(r, here) for r in ready]
-            row = ready[choose_fn(tab_picker_title(here), labels)]
-            command = row.get('continue_command') or []
-        if '--with' not in command[:-1]:
-            print('Not safe to switch that one yet: ' + reason, file=sys.stderr)
-            if here and row.get('tty') == here:
-                print('To pick a different tab instead: SKEPTIC_PICK_TAB=1 s', file=sys.stderr)
-            return 2
+        detail = 'Handoff paused: ' + reason
+        if headless:
+            import widget_switch
+            widget_switch.handoff_error(detail)
+        else:
+            print(detail, file=sys.stderr)
+        return 2
+    if hotkey and row.get('tty') != here:
+        here = row.get('tty')
+        title_from_hotkey = row.get('tab_title') or row.get('label') or ''
     choices = row.get('destinations') or [command[command.index('--with') + 1]]
     # Long titles duplicate the ink banner on ⌘⇧S; the picker chrome carries context.
     pick_title = 'Choose engine' if hotkey else engine_picker_title(row, here)
@@ -1337,7 +1324,10 @@ def switch_open_session(rows=None, choose_fn=None, run=None):
                 widget_switch.handoff_error('Could not open the engine picker. Re-run: python3 install.py --upgrade-integrations')
                 return 2
         if dest is None:
-            dest = choices[choose_fn(pick_title, engine_labels)]
+            try:
+                dest = choices[choose_fn(pick_title, engine_labels)]
+            except KeyboardInterrupt:
+                return 0
     else:
         dest = os.environ.get('SKEPTIC_AUTO_DEST', command[command.index('--with') + 1])
         if dest not in choices:
@@ -1349,7 +1339,17 @@ def switch_open_session(rows=None, choose_fn=None, run=None):
             return 0
     argv = list(command)
     argv[argv.index('--with') + 1] = dest
-    if row.get('continue_cwd'): os.chdir(row['continue_cwd'])
+    if row.get('continue_cwd'):
+        try:
+            os.chdir(row['continue_cwd'])
+        except OSError:
+            detail = 'The selected session’s working directory is no longer accessible.'
+            if headless:
+                import widget_switch
+                widget_switch.handoff_error(detail)
+            else:
+                print(detail, file=sys.stderr)
+            return 2
     return (run or main)(continue_argv(argv[1:]))
 
 

@@ -2,7 +2,7 @@
 from pathlib import Path
 import unittest,types,contextlib,io
 import test_frozen as tests
-faults=[('quota-is-task','h',"provider_notice(text) or row.get('isApiErrorMessage')",'False','test_quota_not_task'),('lose-gap-recovery','h','if (gap or not substantive) and not historical_pass:','if False:','test_broken_chain_recovers_substantive_request'),('trust-unlinked-request','h',"historical.append({'role': 'historical-user-request (unverified; outside recovered chain)'","historical.append({'role': 'user'",'test_broken_chain_recovers_substantive_request'),('drop-explicit-model','s',"elif provider.get('model'): argv += ['--model', provider['model']]","elif provider.get('model'): pass",'test_explicit_native_model_safe_argv')]
+faults=[('quota-is-task','h',"provider_notice(text) or row.get('isApiErrorMessage')",'False','test_quota_not_task'),('lose-gap-recovery','h','if (gap or not substantive) and not historical_pass:','if False:','test_broken_chain_recovers_substantive_request'),('trust-unlinked-request','h',"historical.append({'role': 'historical-user-request (unverified; outside recovered chain)'","historical.append({'role': 'user'",'test_broken_chain_recovers_substantive_request'),('drop-explicit-model','s',"elif provider.get('model'):\n            argv += ['--model', provider['model']]","elif provider.get('model'): pass",'test_explicit_native_model_safe_argv')]
 faults += [
  ('break-attachment-bridge','h',"and not row.get('isSidechain') and not row.get('teamName')]", "and not row.get('isSidechain') and not row.get('teamName') and row.get('type') != 'attachment']", 'test_attachment_bridge_and_last_work'),
  ('generated-is-human','h',"return bool(isinstance(text, str) and re.match", "return bool(False and re.match",'test_absent_task_stays_absent'),

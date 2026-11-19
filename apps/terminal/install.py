@@ -13,6 +13,12 @@ HERE = Path(__file__).resolve().parent
 MARKER = '# Skeptic terminal PATH'
 LEGACY_SKILLS = {'3e6a5458e20095613b14efa59806fe7a14570facbf4daa62a1659d95103605b1', 'fa46d1a626d7ea7a49929e17ae78ca365e2a5be93ec781fe0b4eac41048b1ae0', '1295e0560d0dac183f10a636b726bc611dd9ff5bb3484c5275bf2eef958f5286', '5c585bb4a704f8b5ec5a5b37d5f879fbbeaf5baee247726d30e4d53bf3af9e1f', '36bc21f2ac7cccbbafed1728c44aceb1b6962982db334529a8bd927a35877222'}  # + 12 Oct 2026 shipped versions
 
+LEGACY_HOTKEY = {
+    '8a0e1b60a76346989e73b47e281d54e972339236a0716946cf81d09ce35c6762',
+    'e50088fa4db600b342b5f95640ab9b54b444a8478bb7fa9edcdbef324b8c9bc7',
+    'd5f5532867e1a8d138b05e37ed0fa1cccf2c37729ff8c0e913bfaa7dec9472a6',
+}
+
 
 def safe_parent(path):
     for item in (path, *path.parents):
@@ -20,14 +26,14 @@ def safe_parent(path):
     path.mkdir(parents=True, exist_ok=True)
 
 
-def write_owned(path, text, mode=0o600, upgrade=False):
+def write_owned(path, text, mode=0o600, upgrade=False, legacy_hashes=LEGACY_SKILLS):
     if path.is_symlink(): raise ValueError('Refusing symlink: ' + str(path))
     if path.exists():
         info = path.stat()
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid(): raise ValueError('Unsafe install target')
         if path.read_text() == text:
             path.chmod(mode); return
-        if upgrade and hashlib.sha256(path.read_bytes()).hexdigest() in LEGACY_SKILLS:
+        if upgrade and hashlib.sha256(path.read_bytes()).hexdigest() in legacy_hashes:
             fd = os.open(str(path), os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
             try:
                 current = os.fstat(fd)
@@ -88,7 +94,7 @@ def install_skills(home, integrations=True, upgrade=False):
 def install_hotkey_widget(home, bindir, upgrade=False):
     """⌘⇧S launcher and picker tab (sources live in apps/terminal/widget/)."""
     widget_dir = home / '.skeptic-widget'
-    widget_dir.mkdir(parents=True, exist_ok=True)
+    safe_parent(widget_dir)
     src = HERE / 'widget'
     picker_src = src / 'skeptic-picker.command'
     switch_src = src / 'skeptic-switch'
@@ -98,16 +104,14 @@ def install_hotkey_widget(home, bindir, upgrade=False):
     switch_dst = bindir / 'skeptic-switch'
     picker_text, switch_text = picker_src.read_text(), switch_src.read_text()
 
-    def place(path, text, mode):
-        if upgrade:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(text)
-            path.chmod(mode)
-            return
-        write_owned(path, text, mode, upgrade=False)
-
-    place(picker_dst, picker_text, 0o755)
-    place(switch_dst, switch_text, 0o755)
+    for target, content, legacy_hashes in (
+            (picker_dst, picker_text, ()), (switch_dst, switch_text, LEGACY_HOTKEY)):
+        try:
+            write_owned(target, content, 0o755, upgrade=upgrade, legacy_hashes=legacy_hashes)
+        except ValueError as exc:
+            if not str(exc).startswith('Existing file differs'):
+                raise
+            print(str(exc), file=sys.stderr)
 
 
 def install_handoff_dialog(home, bindir):
