@@ -16,8 +16,8 @@
 #   curl -fsSL https://skeptic.pages.dev/install.sh | sh -s -- --no-profile
 set -eu
 
-VERSION="0.1.0"
-SHA256="9988c22478bf3a9ea4cbed29e949e07320bc89401b7f234b8bf3f4e5dbdd22bf"
+VERSION="0.1.1"
+SHA256="2fa8a60fc90b6ba140725fa394f580854e9d1a8245e0900bbfa8cc47834d57ce"
 URL="${SKEPTIC_URL:-https://github.com/danielcuesta007/skeptic/releases/download/v$VERSION/skeptic-$VERSION.tar.gz}"  # override only for testing; the checksum still applies
 PREFIX="${SKEPTIC_HOME:-$HOME/.local/share/skeptic}"
 
