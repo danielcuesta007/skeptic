@@ -217,27 +217,6 @@ def process_cwd(pid):
     return None
 
 
-def codex_infer_meta(agent, home):
-    """Best-effort Codex thread for this live process when no owner link exists."""
-    cwd = process_cwd(agent['pid'])
-    if not cwd:
-        return None
-    pool = [c for c in codex_candidates(home) if (c.get('cwd') or '') == cwd]
-    if not pool:
-        return None
-    pool.sort(key=lambda c: c.get('updated_at') or 0, reverse=True)
-    best = pool[0]
-    if len(pool) > 1:
-        recent = best.get('updated_at') or 0
-        runner = pool[1].get('updated_at') or 0
-        if recent and runner and abs(recent - runner) < 300000:
-            return None
-    path = Path(best.get('rollout_path') or '')
-    if home / '.codex/sessions' not in path.parents:
-        return None
-    return best
-
-
 def codex_row(agent, home, started, meta, association):
     row = base(agent)
     path = Path(meta['rollout_path'])
@@ -266,9 +245,10 @@ def codex(agent, home, started, links):
             meta = matches[0]
             association = 'owner-confirmed (not automatically verified)'
     if meta is None:
-        meta = codex_infer_meta(agent, home)
-        association = 'inferred from Codex metadata and process working directory'
-    if meta is None:
+        cwd = process_cwd(agent['pid']) or ''
+        row.update(source='codex', cwd=cwd, work_cwd=cwd,
+                   task='Continue work from this Terminal tab',
+                   activity_evidence='Project context only until the conversation is linked')
         return row
     return codex_row(agent, home, started, meta, association)
 

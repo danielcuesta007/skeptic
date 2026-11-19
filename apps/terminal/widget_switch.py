@@ -134,7 +134,12 @@ def _native_dialog(payload, run=None):
     ran = _native_dialog_run(payload, run=run)
     if ran is None:
         return None
-    return ran[0] == 0
+    code, marker = ran
+    if marker == 'cancel':
+        return False
+    if marker == 'ok' and code == 0:
+        return True
+    return None
 
 
 def _handoff_session_name(row, hint_title=''):
@@ -238,7 +243,7 @@ def confirm(summary, evidence, provider, packet, run=None):
         '',
         'Skeptic sends the filtered packet shown in Terminal to the new engine. '
         'Confirm background tools in the original tab are idle. '
-        'After the new engine is running, Skeptic will ask whether to close the stuck tab.',
+        'The original Terminal tab stays open.',
         '',
         'Packet SHA-256: ' + digest_short,
     ])
@@ -293,7 +298,7 @@ def confirm_active_session(row, hint_tty='', hint_title='', run=None):
         'Quota: ' + usage,
         'Terminal tab: ' + tab_line,
         '',
-        'End this session and switch to another agent? The handoff packet will open in a new engine.',
+        'Start a handoff to another agent? The handoff packet will open in a new engine.',
     ]
     text = '\n'.join(lines)
     try:

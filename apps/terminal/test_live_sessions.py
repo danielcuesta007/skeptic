@@ -196,6 +196,15 @@ class HandoffTabTests(unittest.TestCase):
                 live.assess_handoff_row(row, [dict(row, pid=43)])
                 self.assertIsNone(row['continue_command'])
 
+    def test_unlinked_codex_uses_project_context_without_reading_transcript(self):
+        agent = {'pid': 42, 'tty': 'ttys099', 'agent': 'Codex'}
+        with patch.object(live, 'process_cwd', return_value='/workspace/project'), \
+             patch.object(live, 'codex_candidates', side_effect=AssertionError('Unlinked transcript inspected')):
+            row = live.codex(agent, Path('/fixture'), 1, {})
+        self.assertEqual(row['work_cwd'], '/workspace/project')
+        self.assertFalse(row.get('source_path'))
+        self.assertEqual(live.continue_command(row, '/workspace/project')[:2], ['skeptic', 'continue'])
+
 
 class HandoffResolveTests(unittest.TestCase):
     def test_hint_title_disambiguates_same_tty(self):

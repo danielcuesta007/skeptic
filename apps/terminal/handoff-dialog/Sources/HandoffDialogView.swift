@@ -111,7 +111,7 @@ struct HandoffDialogView: View {
             Text(
                 "Skeptic sends the filtered packet in Terminal to the new engine. "
                     + "Confirm background tools in the original tab are idle. "
-                    + "After the new engine is running, Skeptic will ask whether to close the stuck tab."
+                    + "The original Terminal tab stays open."
             )
             .font(SkepticBrand.footnote)
             .foregroundStyle(SkepticBrand.graphite)

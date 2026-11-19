@@ -144,3 +144,25 @@ class HotkeyInstallTests(unittest.TestCase):
             self.assertEqual(switch.read_text(), installed)
             self.assertEqual(picker.read_text(), '# Custom picker')
             self.assertIn('Existing file differs; preserved', stderr.getvalue())
+
+
+class HotkeyWriterTests(unittest.TestCase):
+    def test_destination_writer_holds_reservation_through_provider_call(self):
+        import terminal_writer
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary).resolve() / 'state'
+            observer = switcher.State(directory)
+            self.addCleanup(observer.close)
+
+            def run(command):
+                self.assertEqual(command, ['/bin/true'])
+                with self.assertRaises(switcher.host.Denied):
+                    with switcher.writer_reservation(observer):
+                        self.fail('Writer reservation was released during provider execution')
+                return 0
+
+            with patch('terminal_writer.subprocess.call', side_effect=run):
+                self.assertEqual(terminal_writer.main(str(directory), ['/bin/true']), 0)
+            with switcher.writer_reservation(observer):
+                pass

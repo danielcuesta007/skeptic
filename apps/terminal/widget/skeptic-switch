@@ -58,6 +58,6 @@ on run
 	do shell script "/usr/bin/printf %s " & quoted form of shortTTY & " > " & quoted form of (widgetDir & "hint-tty")
 	do shell script "/usr/bin/printf %s " & quoted form of tabTitle & " > " & quoted form of (widgetDir & "hint-title")
 	set skeptic to quoted form of (home & ".local/bin/skeptic")
-	set cmd to "export SKEPTIC_HOTKEY=1; export SKEPTIC_HINT_TTY=" & quoted form of shortTTY & "; export SKEPTIC_HINT_TITLE=" & quoted form of tabTitle & "; " & skeptic
+	set cmd to "export SKEPTIC_HOTKEY=1; export SKEPTIC_HINT_TTY=" & quoted form of shortTTY & "; export SKEPTIC_HINT_TITLE=" & quoted form of tabTitle & "; /bin/zsh -lic " & quoted form of "exec \"$@\"" & " skeptic-hotkey " & skeptic
 	do shell script cmd
 end run

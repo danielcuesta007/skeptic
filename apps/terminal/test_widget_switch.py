@@ -33,6 +33,11 @@ class WidgetSwitchTests(unittest.TestCase):
             self.assertTrue(w.confirm({}, evidence, 'Cursor', 'pkt', run=run))
             run.assert_not_called()
 
+    def test_dialog_requires_explicit_approval_even_when_cancel_exits_zero(self):
+        for result, expected in [((0, 'cancel'), False), ((0, ''), None), ((0, 'ok'), True), ((1, 'ok'), None)]:
+            with self.subTest(result=result), unittest.mock.patch.object(w, '_native_dialog_run', return_value=result):
+                self.assertIs(w._native_dialog({'kind': 'confirm'}), expected)
+
     def test_native_payload_fields(self):
         captured = {}
         def fake_native(payload, run=None):

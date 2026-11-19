@@ -262,7 +262,8 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 class State:
     """Separate CLI consent; dashboard registrations never imply durable CLI permission."""
     def __init__(self, directory):
-        self.registry = host.Registry(directory)
+        self.directory = os.path.abspath(directory)
+        self.registry = host.Registry(self.directory)
         self.fd = self.registry.statefd
         self.settings = self.read('settings.json', {'grants': {}, 'mappings': {}, 'recent': [], 'analytics': False})
         if not isinstance(self.settings, dict) or set(self.settings) != {'grants', 'mappings', 'recent', 'analytics'}:
@@ -313,8 +314,8 @@ class State:
                 os.close(fd)
                 if getattr(self, 'trust_session_context', False) and hotkey_handoff():
                     raise host.Denied(
-                        'Vault read approval needed once. Open Terminal, run skeptic doctor; '
-                        'if prompted, type approve for your brain vault, then try ⌘⇧S again.')
+                        f'Read approval needed for {kind} {clean(path)}. '
+                        'In Terminal, run skeptic handoff from the selected project and approve that scope, then retry ⌘⇧S.')
                 raise host.Denied('Approval required. Run skeptic in your Terminal.')
             print('Approve persistent read-only access to ' + clean(path) + '?')
             print('Vault: project STATUS matching, governing files, confirmed project and exact linked notes only.\nRevoke with: skeptic permissions revoke PATH')
@@ -416,10 +417,6 @@ def safe_docs(root, fd, paths):
         return host.summarize(engine)
 
 
-def _vault_slug(name):
-    return re.sub(r'[^a-z0-9]+', '', (name or '').lower())
-
-
 def repo_roots(repo):
     roots = {os.path.realpath(os.path.expanduser(repo))}
     try:
@@ -436,11 +433,9 @@ def vault_project_match(repo, documents):
     """Match STATUS paths to a repository using real paths, not raw string equality."""
     roots = repo_roots(repo)
     matches = []
-    repo_slug = _vault_slug(Path(repo).name)
     for path, doc in documents.items():
         folder = str(Path(path).parent)
         refs = references(doc['text'])
-        linked = False
         for ref in refs:
             try:
                 ref_real = os.path.realpath(os.path.expanduser(ref))
@@ -448,24 +443,8 @@ def vault_project_match(repo, documents):
                 continue
             if ref_real in roots or any(r.startswith(ref_real + os.sep) or ref_real.startswith(r + os.sep) for r in roots):
                 matches.append(folder)
-                linked = True
                 break
-            if repo_slug and _vault_slug(Path(ref).name) == repo_slug:
-                matches.append(folder)
-                linked = True
-                break
-        if linked:
-            continue
     return sorted(set(matches))
-
-
-def infer_vault_folder(repo, eligible):
-    """Single brain project folder when its folder name matches the repository basename."""
-    repo_slug = _vault_slug(Path(repo).name)
-    if not repo_slug:
-        return None
-    hits = [folder for folder in eligible if _vault_slug(Path(folder).name) == repo_slug]
-    return hits[0] if len(hits) == 1 else None
 
 
 def vault_candidates(root, fd, repo):
@@ -539,10 +518,6 @@ def assemble(state, cwd, vault, task='', picker=choose, session=None, target=Non
                     matches = [mapped] if mapped in matches else []
                 else:
                     matches = [matches[picker('Confirm project knowledge', matches)]]
-            if not matches:
-                inferred = infer_vault_folder(repo, eligible)
-                if inferred:
-                    matches = [inferred]
             if not matches:
                 # No guessed association. Offer explicit confirmation of an existing checkpoint.
                 if eligible and sys.stdin.isatty() and not getattr(state, 'no_new_grants', False) and not trust:
@@ -838,14 +813,9 @@ def launch_recovery(args, state, adapter, access, snapshot, cwd, task, evidence,
     code = tracked_launch(state, model, cwd, packet, args.vault, task, handoff_title=title)
     if code:
         print(f'Provider exited {code}; original session untouched by Skeptic.', file=sys.stderr)
-    elif widget:
-        print('Handoff finished in this tab. ⌘⇧S on another stuck tab to switch again.', flush=True)
+    elif widget and not hotkey_headless():
+        print('Handoff finished. The original tab remains open.', flush=True)
     return code
-
-
-def parallel_handoff_ok():
-    """⌘⇧S picker handoffs may run in several Terminal windows at once."""
-    return hotkey_handoff() and os.environ.get('SKEPTIC_SERIAL_HANDOFF') != '1'
 
 
 def close_source_tab_ok():
@@ -921,10 +891,6 @@ def close_stuck_terminal_tab(short_tty, run=subprocess.run):
 def writer_reservation(state):
     # Serialize CLI writers sharing the consent state; unmanaged writers still
     # require the explicit project-clear attestation, never inferred from quota.
-    # Hotkey handoffs skip the global lock so each window can switch independently.
-    if parallel_handoff_ok():
-        yield
-        return
     import fcntl
     fd = os.open('continuation-writer.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=state.fd)
     try:
@@ -948,16 +914,15 @@ def _tracked_launch(state, model, cwd, packet, vault, task, handoff_title=''):
     start = dict(obs, session=None, incoming_session=obs.get('session'))
     continuity.warn(index.record(start, model['id'], 'launch_started'))
     try:
+        if hotkey_headless():
+            spawn_provider_terminal(model, cwd, packet, state_dir=state.directory)
+            return 0  # The destination shell acquires the reservation before starting its provider.
         with writer_reservation(state):
             proc, finalize = launch_popen(model, cwd, packet)
-        if proc is None:
-            finalize()
-            return 0  # Terminal accepted the request. Provider exit is unobserved.
-        offer_close_stuck_tab(proc, model, handoff_title)
-        try:
-            code = proc.wait()
-        finally:
-            finalize()
+            try:
+                code = proc.wait()
+            finally:
+                finalize()
     except (OSError, host.Denied):
         continuity.warn(index.record(start, model['id'], 'launch_failed'))
         state.event('launch_failed', model['id']); raise
@@ -992,13 +957,16 @@ OPEN_DESTINATION_TAB = '''on run argv
 end run'''
 
 
-def spawn_provider_terminal(provider, cwd, packet, scratch=None):
+def spawn_provider_terminal(provider, cwd, packet, scratch=None, *, state_dir=None):
     """Hand a private, one-use launcher to the destination Terminal tab."""
     from tempfile import NamedTemporaryFile
 
     folder = Path.home() / '.skeptic-widget'
     folder.mkdir(mode=0o700, parents=True, exist_ok=True)
     argv, cleanup = launch_argv(provider, cwd, packet, scratch=scratch)
+    if state_dir is not None:
+        guard = str(Path(__file__).with_name('terminal_writer.py'))
+        argv = [sys.executable, '-B', guard, state_dir, *argv]
     path = None
     try:
         with NamedTemporaryFile(mode='w', encoding='utf-8', dir=folder,
@@ -1028,8 +996,6 @@ def spawn_provider_terminal(provider, cwd, packet, scratch=None):
 
 def launch_popen(provider, cwd, packet, scratch=None):
     """Start the destination CLI; caller waits then runs finalize() (temp file cleanup)."""
-    if hotkey_headless():
-        return spawn_provider_terminal(provider, cwd, packet, scratch=scratch)
     argv, cleanup = launch_argv(provider, cwd, packet, scratch=scratch)
     return subprocess.Popen(argv, cwd=cwd), cleanup
 
@@ -1548,9 +1514,22 @@ def main(argv=None):
         print('Selected provider: ' + clean(model['label']) + '\nLaunching interactive CLI; host trust/tool approvals still apply.', flush=True)
         if not hotkey_handoff() and (not sys.stdin.isatty() or not sys.stdout.isatty()):
             raise host.Denied('Interactive launch requires Terminal')
-        # Recheck consent/root identity immediately before launch by fresh assembly.
+        widget = args.widget_switch or hotkey_handoff()
+        if widget:
+            import widget_switch
+            evidence = {'title': hint_tab_title() or 'Project context'}
+            if not widget_switch.confirm(summary, evidence, model['label'], packet):
+                raise host.Denied('Switch cancelled; no provider launched')
+        # Recheck consent and the reviewed context immediately before launch.
         state.settings = state.read('settings.json', {})
-        summary, packet = assemble(state, workdir, args.vault, args.task, target=model['id'])
+        state.no_new_grants = widget
+        try:
+            _, refreshed = assemble(state, workdir, args.vault, args.task, target=model['id'])
+        finally:
+            state.no_new_grants = False
+        if widget and refreshed != packet:
+            raise host.Denied('Approved context changed during review; prepare/review a fresh handoff')
+        packet = refreshed
         state.settings['recent'] = [model['id']] + [p for p in state.settings['recent'] if p != model['id']][:9]
         state.save(); state.event('launch_started', model['id'])
         code = tracked_launch(state, model, workdir, packet, args.vault, args.task)
