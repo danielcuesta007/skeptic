@@ -246,7 +246,7 @@ def codex(agent, home, started, links):
             association = 'owner-confirmed (not automatically verified)'
     if meta is None:
         cwd = process_cwd(agent['pid']) or ''
-        row.update(source='codex', cwd=cwd, work_cwd=cwd,
+        row.update(source='codex', cwd=cwd, work_cwd=cwd, queued_turns_unknown=True,
                    task='Continue work from this Terminal tab',
                    activity_evidence='Project context only until the conversation is linked')
         return row
@@ -423,6 +423,8 @@ def needs_active_handoff_confirm(row, hint_title=''):
         return False
     if row.get('source') == 'terminal' and row.get('activity') in ('idle', 'unknown', None):
         return False
+    if row.get('queued_turns_unknown'):
+        return True
     if row.get('activity') != 'working':
         return False
     if row.get('source') in ('terminal',) and not row.get('session_id') and not row.get('source_path'):

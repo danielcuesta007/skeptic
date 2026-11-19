@@ -1,4 +1,6 @@
+import contextlib
 import hashlib
+import io
 import json
 import subprocess
 import unittest
@@ -10,13 +12,16 @@ class WidgetSwitchTests(unittest.TestCase):
     def confirm(self, result=None, error=None, native=None):
         run = Mock(side_effect=error, return_value=result or subprocess.CompletedProcess([], 0, w.APPROVE_BUTTON + '\n', ''))
         evidence = {'id': 'selected-uuid', 'title': 'Vitals restart', 'document': {'text': 'Latest recorded human request (completion unverified):\nwhy does cadence ask twice?\n' + 'x' * 400 + '\n[message m1; user]\nrest'}}
-        with unittest.mock.patch.object(w, '_dialog_binary', return_value=None if native is False else None):
+        with contextlib.redirect_stdout(io.StringIO()) as output, \
+             unittest.mock.patch.object(output, 'isatty', return_value=True), \
+             unittest.mock.patch.object(w, '_dialog_binary', return_value=None):
             approved = w.confirm({'cwd': '/project/" & do shell script "bad'}, evidence, 'Codex', 'exact packet', run=run)
-        return approved, run
+        return approved, run, output.getvalue()
 
     def test_switch_approves_fallback_osascript(self):
-        approved, run = self.confirm()
+        approved, run, output = self.confirm()
         self.assertTrue(approved)
+        self.assertIn('COMPLETE FILTERED RECOVERY PACKET\nexact packet', output)
         argv = run.call_args.args[0]
         self.assertEqual(argv[:3], ['/usr/bin/osascript', '-e', w.SCRIPT])
         digest = hashlib.sha256(b'exact packet').hexdigest()
@@ -34,9 +39,18 @@ class WidgetSwitchTests(unittest.TestCase):
             run.assert_not_called()
 
     def test_dialog_requires_explicit_approval_even_when_cancel_exits_zero(self):
-        for result, expected in [((0, 'cancel'), False), ((0, ''), None), ((0, 'ok'), True), ((1, 'ok'), None)]:
+        for result, expected in [((0, 'cancel'), False), ((0, ''), None), ((0, 'ok'), None), ((0, 'reviewed'), True), ((1, 'reviewed'), None)]:
             with self.subTest(result=result), unittest.mock.patch.object(w, '_native_dialog_run', return_value=result):
                 self.assertIs(w._native_dialog({'kind': 'confirm'}), expected)
+
+    def test_headless_old_dialog_cannot_approve_unseen_packet(self):
+        run = Mock()
+        with unittest.mock.patch.object(w.sys.stdout, 'isatty', return_value=False), \
+             unittest.mock.patch.object(w, '_native_dialog_run', return_value=(0, 'ok')), \
+             unittest.mock.patch.object(w, 'handoff_error') as error:
+            self.assertFalse(w.confirm({}, {}, 'Codex', 'exact packet', run=run))
+        run.assert_not_called()
+        error.assert_called_once()
 
     def test_native_payload_fields(self):
         captured = {}
@@ -48,6 +62,7 @@ class WidgetSwitchTests(unittest.TestCase):
             self.assertTrue(w.confirm({'cwd': '/Users/x/proj'}, evidence, 'Codex', 'packet-bytes', run=Mock()))
         self.assertEqual(captured['kind'], 'confirm')
         self.assertEqual(captured['provider'], 'Codex')
+        self.assertEqual(captured['packet'], 'packet-bytes')
         self.assertIn('fix tiles', captured['lastRequest'])
 
     def test_active_session_skips_when_idle_tab(self):

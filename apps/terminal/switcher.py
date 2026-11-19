@@ -1541,8 +1541,9 @@ def main(argv=None):
         detail = clean(exc) if isinstance(exc, host.Denied) else 'Local source missing, inaccessible or invalid. Check --project (original cwd), --id UUID and --cwd (destination). Use --conversation-only for approved transcript recovery. Original session untouched.'
         if hotkey_handoff():
             hotkey_clear_handoff_tab()
-            import widget_switch
-            widget_switch.handoff_error(detail)
+            if not os.environ.get('SKEPTIC_HANDOFF_ERROR_SHOWN'):
+                import widget_switch
+                widget_switch.handoff_error(detail)
         else:
             print('Skeptic: ' + detail, file=sys.stderr)
         return 1

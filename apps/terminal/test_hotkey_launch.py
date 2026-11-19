@@ -1,7 +1,9 @@
 import os
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -166,3 +168,43 @@ class HotkeyWriterTests(unittest.TestCase):
                 self.assertEqual(terminal_writer.main(str(directory), ['/bin/true']), 0)
             with switcher.writer_reservation(observer):
                 pass
+
+
+    def test_ctrl_c_reaches_provider_without_releasing_reservation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            directory = root / 'state'
+            observer = switcher.State(directory)
+            try:
+                code = (
+                    "import signal, time; from pathlib import Path\n"
+                    "signal.signal(signal.SIGINT, lambda *_: Path('interrupted').touch())\n"
+                    "Path('started').touch()\n"
+                    "while not Path('stop').exists(): time.sleep(.01)\n"
+                )
+                argv = [sys.executable, '-B', str(Path(switcher.__file__).with_name('terminal_writer.py')),
+                        str(directory), sys.executable, '-c', code]
+                with subprocess.Popen(argv, cwd=root, start_new_session=True) as writer:
+                    def await_file(path):
+                        deadline = time.monotonic() + 5
+                        while not path.exists() and writer.poll() is None and time.monotonic() < deadline:
+                            time.sleep(.01)
+                        self.assertTrue(path.exists())
+
+                    try:
+                        await_file(root / 'started')
+                        os.killpg(writer.pid, signal.SIGINT)
+                        await_file(root / 'interrupted')
+                        with self.assertRaises(switcher.host.Denied):
+                            with switcher.writer_reservation(observer):
+                                self.fail('Provider is still running')
+                    finally:
+                        (root / 'stop').touch()
+                        try:
+                            writer.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            os.killpg(writer.pid, signal.SIGKILL)
+                            raise
+                    self.assertEqual(writer.returncode, 0)
+            finally:
+                observer.close()

@@ -137,7 +137,8 @@ def _native_dialog(payload, run=None):
     code, marker = ran
     if marker == 'cancel':
         return False
-    if marker == 'ok' and code == 0:
+    expected = 'reviewed' if payload.get('kind') == 'confirm' else 'ok'
+    if marker == expected and code == 0:
         return True
     return None
 
@@ -225,10 +226,16 @@ def confirm(summary, evidence, provider, packet, run=None):
         'lastRequest': latest[:400] if latest else '',
         'folder': short_project,
         'digest': digest_short,
+        'packet': packet,
     }
     approved = _native_dialog(payload, run=run)
     if approved is not None:
         return approved
+    if not sys.stdout.isatty():
+        handoff_error('Could not show the outgoing packet. Open a Terminal and run '
+                      'skeptic handoff to inspect the context locally.', run=run)
+        return False
+    print('COMPLETE FILTERED RECOVERY PACKET\n' + packet, flush=True)
     lines = [
         'SKEPTIC · Session Handoff',
         'Your work. Your memory. Any AI.',
@@ -242,7 +249,7 @@ def confirm(summary, evidence, provider, packet, run=None):
         'Folder: ' + short_project,
         '',
         'Skeptic sends the filtered packet shown in Terminal to the new engine. '
-        'Confirm background tools in the original tab are idle. '
+        'Confirm background writers, queued turns and automatic continuation are inactive. '
         'The original Terminal tab stays open.',
         '',
         'Packet SHA-256: ' + digest_short,
@@ -285,6 +292,7 @@ def confirm_active_session(row, hint_tty='', hint_title='', run=None):
         'tty': hint_tty or row.get('tty') or '',
         'tabTitle': hint_title or row.get('tab_title') or '',
         'usageQuota': usage,
+        'activityUnverified': bool(row.get('queued_turns_unknown')),
     }
     approved = _native_dialog(payload, run=run)
     if approved is not None:
@@ -292,7 +300,7 @@ def confirm_active_session(row, hint_tty='', hint_title='', run=None):
     lines = [
         'SKEPTIC · Session Handoff',
         '',
-        'This session is still running.',
+        ('This session’s queued turns are unverified.' if row.get('queued_turns_unknown') else 'This session is still running.'),
         '',
         'On this tab: ' + name,
         'Quota: ' + usage,

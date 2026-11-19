@@ -203,6 +203,7 @@ class HandoffTabTests(unittest.TestCase):
             row = live.codex(agent, Path('/fixture'), 1, {})
         self.assertEqual(row['work_cwd'], '/workspace/project')
         self.assertFalse(row.get('source_path'))
+        self.assertTrue(live.needs_active_handoff_confirm(row))
         self.assertEqual(live.continue_command(row, '/workspace/project')[:2], ['skeptic', 'continue'])
 
 
