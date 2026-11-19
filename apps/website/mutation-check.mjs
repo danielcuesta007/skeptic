@@ -20,7 +20,7 @@ const cases = [
  ['comparison undated', 'claims stay honest', 'guide.html', s => s.replace('as of October 2026', 'today')],
  ['brand colour creeps in', 'palette is monochrome', 'style.css', s => s.replace('--grey:#8c8c8c', '--grey:#3f8a4f')],
  ['unpack before checksum', 'installer verifies the download before unpacking and never escalates', 'install.sh', s => s.replace('mkdir -p "$PREFIX/$VERSION"\ntar -xzf', 'tar -xzf').replace('curl -fsSL "$URL" -o "$tmp/skeptic.tar.gz" || die "download failed: $URL"', 'curl -fsSL "$URL" -o "$tmp/skeptic.tar.gz" || die "download failed: $URL"\nmkdir -p "$PREFIX/$VERSION"\ntar -xzf "$tmp/skeptic.tar.gz" -C "$PREFIX/$VERSION" --strip-components 1')],
- ['formula out of step', 'install script and Homebrew formula point at the same release', '../../Formula/skeptic.rb', s => s.replace('v0.1.0/skeptic-0.1.0', 'v0.0.9/skeptic-0.0.9')],
+ ['formula out of step', 'install script and Homebrew formula point at the same release', '../../Formula/skeptic.rb', s => s.replace(/v[0-9.]+\/skeptic-[0-9.]+(?=\.tar\.gz)/, 'v0.0.0/skeptic-0.0.0')],
  ['failure shown while a copy is in flight', 'site.js: tabs switch by click and arrow keys; copy writes the command', 'site.js', s => s.replace('if (successes > before || pending > 1) return;', 'if (successes > before) return;')],
  ['stale failure shown after a success', 'site.js: tabs switch by click and arrow keys; copy writes the command', 'site.js', s => s.replace('if (successes > before || pending > 1) return;', 'if (pending > 1) return;')],
  ['repeat result not re-announced', 'site.js: tabs switch by click and arrow keys; copy writes the command', 'site.js', s => s.replace("status.textContent === message ? message + '\\u00a0' : message", 'message')],
