@@ -31,6 +31,94 @@ def clean(value):
     return ''.join(c if c >= ' ' and c != '\x7f' else ' ' for c in str(value))
 
 
+def _brand_color_ok(stream=None):
+    stream = stream or sys.stdout
+    return stream.isatty() and not os.environ.get('NO_COLOR')
+
+
+def _picker_brand(stream):
+    """Branded alt-screen handoff (⌘⇧S): ink field + paper banner, no truecolor."""
+    return hotkey_handoff() and _brand_color_ok(stream)
+
+
+# Brand ink/paper (docs/brand/README.md) — truecolor in modern Terminal.app.
+SKEPTIC_INK = (11, 11, 12)
+SKEPTIC_PAPER = (247, 247, 247)
+SKEPTIC_GREY = (140, 140, 140)
+
+
+def ink_paint(text, fg=SKEPTIC_PAPER, bg=SKEPTIC_INK):
+    if not _brand_color_ok():
+        return text
+    return (f'\033[38;2;{fg[0]};{fg[1]};{fg[2]}m'
+            f'\033[48;2;{bg[0]};{bg[1]};{bg[2]}m{text}\033[0m')
+
+
+ANSI_ESCAPE = re.compile(r'\033\[[0-?]*[ -/]*[@-~]')
+
+
+def picker_plain(value):
+    return clean(ANSI_ESCAPE.sub('', value))
+
+
+def format_picker_row(line, columns):
+    """Render one picker row; never strip ANSI via clean() (that leaks [38;2;… garbage)."""
+    if '\033' in line:
+        plain = picker_plain(line)
+        if len(plain) > max(0, columns - 1):
+            return picker_line(plain, columns)
+        return line
+    return picker_line(line, columns)
+
+
+def picker_ink_row(text, columns, stream=None):
+    """Ink bar for the alt-screen picker — bold paper on black, not 24-bit (alt buffer safe)."""
+    plain = picker_line(text, columns - 2)
+    if not plain:
+        return ''
+    pad = max(0, columns - len(plain) - 2)
+    inner = ' ' + plain + (' ' * pad) + ' '
+    if not _brand_color_ok(stream):
+        return inner
+    return '\033[1;97;40m' + inner + '\033[0m'
+
+
+def picker_muted_row(text, columns, stream=None):
+    line = picker_line(text, columns)
+    if not _brand_color_ok(stream) or not line:
+        return line
+    return '\033[90m' + line + '\033[0m'
+
+
+def ink_bar(text, columns, stream=None):
+    return picker_ink_row(text, columns, stream)
+
+
+def handoff_picker_banner(columns, stream=None):
+    bits = ['SKEPTIC', 'session handoff']
+    here = context_tty()
+    title = hint_tab_title()
+    if here:
+        bits.append('tab ' + here)
+    if title:
+        bits.append(clean(title)[:48])
+    return ink_bar(' · '.join(bits), columns, stream)
+
+
+def handoff_picker_header(title, columns, stream):
+    """Branded picker chrome for ⌘⇧S — hood bar, tagline, step cue."""
+    tag = picker_muted_row('Your work. Your memory. Any AI.', columns, stream)
+    lines = [handoff_picker_banner(columns, stream), tag]
+    short = clean(title).strip()
+    lowered = short.lower()
+    engine_step = not short or lowered in ('choose engine',) or lowered.startswith('choose engine')
+    if engine_step:
+        lines.append(picker_muted_row('Choose the engine to continue your work.', columns, stream))
+    elif short:
+        lines.append(picker_muted_row(short, columns, stream))
+    return lines
+
+
 def picker_line(value, columns):
     """Keep a row within the screen, including wide and combining characters."""
     result, width = [], 0
@@ -63,6 +151,7 @@ def choose(title, options, stream=None, output=None, on_enter=None):
     top, rendered_size, redraw = 0, None, True
     try:
         tty.setcbreak(fd)
+        brand = _picker_brand(output)
         output.write('\033[?1049h\033[?25l')
         while True:
             try: columns, rows = os.get_terminal_size(output.fileno())
@@ -71,7 +160,12 @@ def choose(title, options, stream=None, output=None, on_enter=None):
             if redraw or rendered_size != (columns, rows):
                 help_line = ('Use ↑ ↓ to select, Enter to continue. Esc/q cancels.' if columns >= 51
                              else '↑/↓ select · Enter · Esc/q')
-                header = [title, help_line, f'{index + 1}/{len(options)}'][:max(0, rows - 2)]
+                if brand:
+                    help_line = picker_muted_row(help_line, columns, output)
+                    header = handoff_picker_header(title, columns, output) + [help_line, f'{index + 1}/{len(options)}']
+                else:
+                    header = [title, help_line, f'{index + 1}/{len(options)}']
+                header = header[:max(0, rows - 2)]
                 selected = options[index]
                 selected_title = getattr(selected, 'picker_title', str(selected))
                 details = getattr(selected, 'picker_details', ())
@@ -88,12 +182,23 @@ def choose(title, options, stream=None, output=None, on_enter=None):
                 top = min(top, max(0, len(options) - capacity))
                 if index < top: top = index
                 elif index >= top + capacity: top = index - capacity + 1
-                lines = header + [('› ' if n == index else '  ') +
-                                  getattr(options[n], 'picker_title', str(options[n]))
-                                  for n in range(top, min(len(options), top + capacity))] + detail_lines
+                list_lines = []
+                for n in range(top, min(len(options), top + capacity)):
+                    label = getattr(options[n], 'picker_title', str(options[n]))
+                    prefix = '› ' if n == index else '  '
+                    row = prefix + label
+                    if n == index and _brand_color_ok(output):
+                        if brand:
+                            row = '\033[1;30;47m' + row + ' \033[0m'
+                        else:
+                            row = '\033[1m' + row + '\033[0m'
+                    elif brand and _brand_color_ok(output):
+                        row = '\033[90m' + row + '\033[0m'
+                    list_lines.append(row)
+                lines = header + list_lines + detail_lines
                 # Always anchor at the top after terminal reflow; never emit enough
                 # rows/columns to scroll or wrap. No padding before selected details.
-                output.write('\033[H\033[J' + '\r\n'.join(picker_line(line, columns) for line in lines))
+                output.write('\033[H\033[J' + '\r\n'.join(format_picker_row(line, columns) for line in lines))
                 output.flush()
                 rendered_size, redraw = (columns, rows), False
             # A bounded wait notices SIGWINCH-driven size changes without consuming a
@@ -114,13 +219,17 @@ def choose(title, options, stream=None, output=None, on_enter=None):
             redraw = True
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
-        output.write('\033[?25h\033[?1049l'); output.flush()
+        output.write('\033[0m\033[?25h\033[?1049l'); output.flush()
+
+
+PROVIDER_BIN = {'claude': 'claude', 'codex': 'codex', 'hermes': 'hermes', 'cursor': 'agent', 'antigravity': 'agy'}
 
 
 def providers(which=shutil.which, fetch=None):
-    result = [{'id': p, 'label': label, 'executable': which(p), 'local': False,
-               'availability': 'CLI installed; authentication/quota/model unknown' if which(p) else 'CLI missing'}
-              for p, label in [('claude', 'Claude Code'), ('codex', 'Codex'), ('hermes', 'Hermes')]]
+    result = [{'id': p, 'label': label, 'executable': which(PROVIDER_BIN.get(p, p)), 'local': False,
+               'availability': 'CLI installed; authentication/quota/model unknown' if which(PROVIDER_BIN.get(p, p)) else 'CLI missing'}
+              for p, label in [('claude', 'Claude Code'), ('codex', 'Codex'), ('hermes', 'Hermes'),
+                               ('cursor', 'Cursor Agent'), ('antigravity', 'Antigravity')]]
     # Only fixed loopback read-only endpoints. Never honor proxy/remote URL environment variables.
     def local_fetch(url):
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
@@ -153,7 +262,8 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 class State:
     """Separate CLI consent; dashboard registrations never imply durable CLI permission."""
     def __init__(self, directory):
-        self.registry = host.Registry(directory)
+        self.directory = os.path.abspath(directory)
+        self.registry = host.Registry(self.directory)
         self.fd = self.registry.statefd
         self.settings = self.read('settings.json', {'grants': {}, 'mappings': {}, 'recent': [], 'analytics': False})
         if not isinstance(self.settings, dict) or set(self.settings) != {'grants', 'mappings', 'recent', 'analytics'}:
@@ -201,7 +311,12 @@ class State:
             if getattr(self, 'no_new_grants', False):
                 os.close(fd); raise host.Denied('Approved scope changed/revoked; refresh checkpoint manually')
             if not sys.stdin.isatty():
-                os.close(fd); raise host.Denied('Approval required. Run skeptic in your Terminal.')
+                os.close(fd)
+                if getattr(self, 'trust_session_context', False) and hotkey_handoff():
+                    raise host.Denied(
+                        f'Read approval needed for {kind} {clean(path)}. '
+                        'In Terminal, run skeptic handoff from the selected project and approve that scope, then retry ⌘⇧S.')
+                raise host.Denied('Approval required. Run skeptic in your Terminal.')
             print('Approve persistent read-only access to ' + clean(path) + '?')
             print('Vault: project STATUS matching, governing files, confirmed project and exact linked notes only.\nRevoke with: skeptic permissions revoke PATH')
             if ask('Type approve: ').strip() != 'approve':
@@ -302,6 +417,36 @@ def safe_docs(root, fd, paths):
         return host.summarize(engine)
 
 
+def repo_roots(repo):
+    roots = {os.path.realpath(os.path.expanduser(repo))}
+    try:
+        out = subprocess.run(['git', '-C', repo, 'rev-parse', '--show-toplevel'],
+                             capture_output=True, text=True, timeout=5, check=False)
+        if out.returncode == 0 and out.stdout.strip():
+            roots.add(os.path.realpath(out.stdout.strip()))
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        pass
+    return roots
+
+
+def vault_project_match(repo, documents):
+    """Match STATUS paths to a repository using real paths, not raw string equality."""
+    roots = repo_roots(repo)
+    matches = []
+    for path, doc in documents.items():
+        folder = str(Path(path).parent)
+        refs = references(doc['text'])
+        for ref in refs:
+            try:
+                ref_real = os.path.realpath(os.path.expanduser(ref))
+            except OSError:
+                continue
+            if ref_real in roots or any(r.startswith(ref_real + os.sep) or ref_real.startswith(r + os.sep) for r in roots):
+                matches.append(folder)
+                break
+    return sorted(set(matches))
+
+
 def vault_candidates(root, fd, repo):
     # Enumerate only canonical project directory entries; no recursive vault scan.
     statuses = []
@@ -317,16 +462,21 @@ def vault_candidates(root, fd, repo):
             if stat.S_ISDIR(info.st_mode): statuses.append('03 Projects/' + name + '/STATUS.md')
     finally: os.close(projectfd)
     snapshot = safe_docs(root, fd, statuses)
-    matches = [str(Path(p).parent) for p, doc in snapshot['documents'].items() if repo in references(doc['text'])]
-    return matches, snapshot['documents']
+    return vault_project_match(repo, snapshot['documents']), snapshot['documents']
 
 
 def assemble(state, cwd, vault, task='', picker=choose, session=None, target=None):
     conversation_only = bool(session and session.get("conversation_only"))
-    # A vault-root conversation uses the existing bounded vault reader, never
-    # requests a repository grant over the entire knowledge base.
-    vault_session = session is not None and os.path.realpath(cwd) == os.path.realpath(os.path.expanduser(vault))
-    home_session = session is not None and (Path(cwd) == Path.home() or conversation_only or vault_session)
+    # Vault-root continuation (`continue --cwd ~/brain` or session at vault) must not
+    # request a repository grant over the entire knowledge base.
+    vault_expanded = os.path.realpath(os.path.expanduser(vault))
+    at_vault_root = os.path.realpath(os.path.abspath(cwd)) == vault_expanded
+    vault_session = at_vault_root
+    home_session = (
+        conversation_only
+        or at_vault_root
+        or (session is not None and (Path(cwd) == Path.home() or conversation_only or vault_session))
+    )
     project_gap = None
     try: repo = str(cwd) if home_session else repository(cwd)
     except (host.Denied, OSError):
@@ -362,14 +512,21 @@ def assemble(state, cwd, vault, task='', picker=choose, session=None, target=Non
             eligible = [str(Path(p).parent) for p in candidates]
             if mapped in eligible: matches = [mapped]
             if len(matches) > 1 and getattr(state, 'no_new_grants', False): matches = []
+            trust = getattr(state, 'trust_session_context', False)
             if len(matches) > 1:
-                matches = [matches[picker('Confirm project knowledge', matches)]]
+                if trust:
+                    matches = [mapped] if mapped in matches else []
+                else:
+                    matches = [matches[picker('Confirm project knowledge', matches)]]
             if not matches:
                 # No guessed association. Offer explicit confirmation of an existing checkpoint.
-                if eligible and sys.stdin.isatty() and not getattr(state, 'no_new_grants', False):
+                if eligible and sys.stdin.isatty() and not getattr(state, 'no_new_grants', False) and not trust:
                     options = ['Continue with session only' if home_session else 'Continue with repository only'] + sorted(eligible)
                     selected = picker('No exact repository reference. Confirm a mapping or continue without knowledge.', options)
-                    if selected: matches = [options[selected]]
+                    if selected is not None:
+                        choice = options[selected]
+                        if choice in eligible:
+                            matches = [choice]
                 if not matches: gaps.append('No confirmed vault association; project knowledge missing.')
             if matches:
                 folder = matches[0]
@@ -527,9 +684,23 @@ def session_destination(state, snapshot, explicit=None, confirm=False):
     return cwd
 
 
+def hotkey_headless():
+    """⌘⇧S via `do shell script` — native sheets only until the destination CLI needs a tab."""
+    return hotkey_handoff() and not (sys.stdin.isatty() and sys.stdout.isatty())
+
+
+def hotkey_handoff():
+    """True only for an explicit ⌘⇧S launch (not stale hint files or leftover exports)."""
+    if os.environ.get('SKEPTIC_HOTKEY') != '1':
+        return False
+    hint = os.environ.get('SKEPTIC_HINT_TTY', '').strip()
+    return bool(re.fullmatch(r'ttys[0-9]{3,4}', hint))
+
+
 def session_cli(args, state):
     import sessions as history
-    selected = getattr(args, 'widget_switch', False) and bool(getattr(args, 'session_id', None) or getattr(args, 'session_file', None))
+    widget = getattr(args, 'widget_switch', False) or hotkey_handoff()
+    selected = widget and bool(getattr(args, 'session_id', None) or getattr(args, 'session_file', None))
     access = history.Access(state, force_prompt=getattr(args, 'fresh_session_approval', False), selected=selected)
     if args.command == 'sessions' and args.action == 'revoke':
         access.revoke(); print('Session discovery/extraction approvals revoked. Original sessions untouched.'); return 0
@@ -593,30 +764,30 @@ def session_cli(args, state):
 
 
 def launch_recovery(args, state, adapter, access, snapshot, cwd, task, evidence, summary, packet):
-    if not sys.stdin.isatty() or not sys.stdout.isatty(): raise host.Denied('Launch requires a second interactive Terminal; original session stays open')
-    try:
-        with writer_reservation(state): pass
-    except host.Denied as error:
-        if getattr(args, 'widget_switch', False) and 'writer is active' in str(error):
-            import widget_switch
-            widget_switch.show_existing(Path(args.state_dir).expanduser() / 'continuation-writer.lock')
-        raise
+    widget = getattr(args, 'widget_switch', False) or hotkey_handoff()
+    if not widget and (not sys.stdin.isatty() or not sys.stdout.isatty()):
+        raise host.Denied('Launch requires a second interactive Terminal; original session stays open')
     model = requested_model(select_provider(state, args.provider), getattr(args, 'model', None))
-    print('Selected provider: ' + clean(model['label']) + '. Original session remains open. Host approvals still apply.', flush=True)
     state.settings = state.read('settings.json', {})
     # Re-read granted knowledge and recheck transcript consent/snapshot immediately before launch.
     summary, packet = assemble(state, cwd, args.vault, task, session=evidence, target=model['id'])
     if adapter.verify(access, snapshot)['appended_bytes']: raise host.Denied('Source appended; refresh the review before launch')
     state.settings['recent'] = [model['id']] + [p for p in state.settings['recent'] if p != model['id']][:9]
-    print('REVIEW SELECTED SESSION HANDOFF — no provider has launched yet.', flush=True)
-    review_summary(summary, evidence)
-    print('COMPLETE FILTERED RECOVERY PACKET\n' + packet, flush=True)
-    print('Outgoing evidence SHA-256: ' + hashlib.sha256(packet.encode()).hexdigest())
-    if getattr(args, 'widget_switch', False):
+    if widget:
+        if sys.stdout.isatty():
+            hint = os.environ.get('SKEPTIC_HINT_TTY', '')
+            title = clean(evidence.get('title') or session_name({'label': summary.get('project')}))
+            where = f" (from tab {hint})" if hint else ''
+            print(f"Session Handoff: {title}{where} → {clean(model['label'])}", flush=True)
         import widget_switch
         if not widget_switch.confirm(summary, evidence, model['label'], packet):
             raise host.Denied('Switch cancelled; no provider launched')
     else:
+        print('Selected provider: ' + clean(model['label']) + '. Original session remains open. Host approvals still apply.', flush=True)
+        print('REVIEW SELECTED SESSION HANDOFF — no provider has launched yet.', flush=True)
+        review_summary(summary, evidence)
+        print('COMPLETE FILTERED RECOVERY PACKET\n' + packet, flush=True)
+        print('Outgoing evidence SHA-256: ' + hashlib.sha256(packet.encode()).hexdigest())
         print('A detached or quota-limited source may still have a tool process writing or automatically resume when availability returns. Check background tools AND queued/automatic continuation. Skeptic cannot prove unmanaged process quiescence. If any agent may write this project, cancel and choose an existing isolated worktree with --cwd, or prepare a handoff only.')
         approval = input('After checking the original Claude window and other project writers, type project-clear to continue: or project-clear send to confirm writer safety AND send this exact reviewed packet in one action; anything else cancels: ').strip()
         if approval not in ('project-clear', 'project-clear send'):
@@ -638,9 +809,82 @@ def launch_recovery(args, state, adapter, access, snapshot, cwd, task, evidence,
     # requires an exact, non-symlink directory; never follow a saved alias.
     if getattr(args, 'open_source_check', None): args.open_source_check()
     destination_fd = host.open_directory(str(cwd)); os.close(destination_fd)
-    code = tracked_launch(state, model, cwd, packet, args.vault, task)
-    if code: print(f'Provider exited {code}; original session untouched by Skeptic.', file=sys.stderr)
+    title = clean(evidence.get('title') or '')
+    code = tracked_launch(state, model, cwd, packet, args.vault, task, handoff_title=title)
+    if code:
+        print(f'Provider exited {code}; original session untouched by Skeptic.', file=sys.stderr)
+    elif widget and not hotkey_headless():
+        print('Handoff finished. The original tab remains open.', flush=True)
     return code
+
+
+def close_source_tab_ok():
+    """After a successful spawn on the hotkey path, close the stuck source tab."""
+    if not hotkey_handoff() or sys.platform != 'darwin':
+        return False
+    return os.environ.get('SKEPTIC_CLOSE_SOURCE_TAB', '1') != '0'
+
+
+CLOSE_TAB_SCRIPT = '''on run argv
+    set shortId to item 1 of argv
+    tell application "Terminal"
+        repeat with w in windows
+            repeat with t in tabs of w
+                try
+                    if (text 6 thru -1 of (tty of t)) is shortId then
+                        close t
+                        return "closed"
+                    end if
+                end try
+            end repeat
+        end repeat
+    end tell
+    return "missing"
+end run'''
+
+
+def provider_spawned_ok(proc, settle=1.25, step=0.12, timeout=8.0):
+    """True when the destination process stays alive for at least settle seconds."""
+    import time
+    start = time.monotonic()
+    while time.monotonic() - start < timeout:
+        if proc.poll() is not None:
+            return False
+        if time.monotonic() - start >= settle:
+            return True
+        time.sleep(step)
+    return proc.poll() is None
+
+
+def offer_close_stuck_tab(proc, model, handoff_title=''):
+    if not close_source_tab_ok() or not provider_spawned_ok(proc):
+        return False
+    hint = os.environ.get('SKEPTIC_HINT_TTY', '').strip()
+    if not hint or hint == context_tty():
+        return False
+    import widget_switch
+    label = clean(model.get('label') or model.get('id') or 'New engine')
+    if not widget_switch.confirm_close_source(label, handoff_title, hint, hint_tab_title()):
+        print('Keeping stuck tab ' + hint + '.', flush=True)
+        return False
+    if close_stuck_terminal_tab(hint):
+        print('Closed stuck tab ' + hint + '.', flush=True)
+        return True
+    print('Could not find stuck tab ' + hint + ' to close.', file=sys.stderr)
+    return False
+
+
+def close_stuck_terminal_tab(short_tty, run=subprocess.run):
+    """Close the Terminal tab that launched ⌘⇧S (best-effort AppleScript)."""
+    if not short_tty or not re.fullmatch(r'ttys[0-9]{3,4}', short_tty):
+        return False
+    if short_tty == context_tty():
+        return False
+    try:
+        out = run(['/usr/bin/osascript', '-e', CLOSE_TAB_SCRIPT, short_tty], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return out.returncode == 0 and out.stdout.strip() == 'closed'
 
 
 @contextmanager
@@ -654,23 +898,32 @@ def writer_reservation(state):
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600:
             raise host.Denied('Unsafe continuation writer reservation')
         try: fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError: raise host.Denied('Another Skeptic CLI writer is active; no provider launched')
+        except BlockingIOError: raise host.Denied('Another handoff is launching right now; wait a moment and try again')
         yield
     finally: os.close(fd)
 
 
-def tracked_launch(state, model, cwd, packet, vault, task):
-    with writer_reservation(state):
-        return _tracked_launch(state, model, cwd, packet, vault, task)
+def tracked_launch(state, model, cwd, packet, vault, task, handoff_title=''):
+    return _tracked_launch(state, model, cwd, packet, vault, task, handoff_title=handoff_title)
 
 
-def _tracked_launch(state, model, cwd, packet, vault, task):
+def _tracked_launch(state, model, cwd, packet, vault, task, handoff_title=''):
     import continuity
     index = continuity.Index(state)
-    start = dict(state.observation, session=None, incoming_session=state.observation.get('session'))
+    obs = getattr(state, 'observation', None) or {}
+    start = dict(obs, session=None, incoming_session=obs.get('session'))
     continuity.warn(index.record(start, model['id'], 'launch_started'))
-    try: code = launch(model, cwd, packet)
-    except OSError:
+    try:
+        if hotkey_headless():
+            spawn_provider_terminal(model, cwd, packet, state_dir=state.directory)
+            return 0  # The destination shell acquires the reservation before starting its provider.
+        with writer_reservation(state):
+            proc, finalize = launch_popen(model, cwd, packet)
+            try:
+                code = proc.wait()
+            finally:
+                finalize()
+    except (OSError, host.Denied):
         continuity.warn(index.record(start, model['id'], 'launch_failed'))
         state.event('launch_failed', model['id']); raise
     try:
@@ -678,7 +931,7 @@ def _tracked_launch(state, model, cwd, packet, vault, task):
         state.no_new_grants = True
         if Path(cwd) == Path.home(): raise host.Denied('Home-started context requires an explicit selected session; home never scanned')
         assemble(state, cwd, vault, task)
-        continuity.warn(index.record(state.observation, model['id'], 'provider_exited', code))
+        continuity.warn(index.record(obs, model['id'], 'provider_exited', code))
     except (OSError, ValueError, host.Denied, subprocess.TimeoutExpired):
         continuity.warn(index.record(start, model['id'], 'provider_exited_checkpoint_unavailable', code))
         print('Post-session checkpoint unavailable; next switch will re-read approved sources.', file=sys.stderr)
@@ -696,29 +949,109 @@ def requested_model(provider, model):
     return dict(provider, model=model, model_verification='User selected; provider will validate availability')
 
 
-def launch(provider, cwd, packet, run=subprocess.run, scratch=None):
-    if not provider['executable']: raise host.Denied('Selected provider CLI is missing')
-    if provider.get('id') == 'hermes':
-        # Hermes seeds an interactive chat from a file (`chat --query-file`); a
-        # private 0600 file in Skeptic's state dir, removed when Hermes exits.
+OPEN_DESTINATION_TAB = '''on run argv
+    set launcherPath to item 1 of argv
+    tell application "Terminal"
+        do script ("/bin/zsh -l " & quoted form of launcherPath)
+    end tell
+end run'''
+
+
+def spawn_provider_terminal(provider, cwd, packet, scratch=None, *, state_dir=None):
+    """Hand a private, one-use launcher to the destination Terminal tab."""
+    from tempfile import NamedTemporaryFile
+
+    folder = Path.home() / '.skeptic-widget'
+    folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+    argv, cleanup = launch_argv(provider, cwd, packet, scratch=scratch)
+    if state_dir is not None:
+        guard = str(Path(__file__).with_name('terminal_writer.py'))
+        argv = [sys.executable, '-B', guard, state_dir, *argv]
+    path = None
+    try:
+        with NamedTemporaryFile(mode='w', encoding='utf-8', dir=folder,
+                                prefix='handoff-', suffix='.command', delete=False) as launcher:
+            path = Path(launcher.name)
+            launcher.write('/bin/rm -f -- "$0" || exit 1\n')
+            command = 'exec ' + shlex.join(argv)
+            if provider['id'] == 'hermes':
+                query_path = argv[argv.index('--query-file') + 1]
+                remove_query = shlex.join(['/bin/rm', '-f', '--', query_path])
+                launcher.write('trap ' + shlex.quote(remove_query) + ' EXIT\n')
+                command = shlex.join(argv)
+            title = clean(provider.get('label') or provider['id'])
+            launcher.write("printf '\\033]0;%s\\007' " + shlex.quote('Skeptic · ' + title) + '\n')
+            launcher.write('cd -- ' + shlex.quote(str(cwd)) + ' || exit 1\n')
+            launcher.write(command + '\n')
+        subprocess.run(['/usr/bin/osascript', '-e', OPEN_DESTINATION_TAB, str(path)],
+                       check=True, timeout=30, capture_output=True)
+    except (OSError, subprocess.SubprocessError) as exc:
+        if path is not None:
+            path.unlink(missing_ok=True)
+        cleanup()
+        raise host.Denied('Could not open Terminal for the new engine') from exc
+    # Terminal opens the tab asynchronously. The destination shell owns cleanup.
+    return None, lambda: None
+
+
+def launch_popen(provider, cwd, packet, scratch=None):
+    """Start the destination CLI; caller waits then runs finalize() (temp file cleanup)."""
+    argv, cleanup = launch_argv(provider, cwd, packet, scratch=scratch)
+    return subprocess.Popen(argv, cwd=cwd), cleanup
+
+
+def launch_argv(provider, cwd, packet, scratch=None):
+    if not provider['executable']:
+        raise host.Denied('Selected provider CLI is missing')
+    cleanup = lambda: None
+    if provider.get('id') in ('cursor', 'antigravity'):
+        argv = [provider['executable'], '-p', packet]
+    elif provider.get('id') == 'hermes':
         folder = Path(scratch or (Path.home() / '.skeptic-cli' / 'handoffs'))
         folder.mkdir(mode=0o700, parents=True, exist_ok=True)
         path = folder / ('hermes-' + os.urandom(8).hex() + '.md')
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         try:
-            with os.fdopen(fd, 'w') as out: out.write(packet)
-            argv = [provider['executable'], '--in', str(cwd)]
-            if provider.get('model'): argv += ['-m', provider['model']]
-            return run(argv + ['chat', '--query-file', str(path)], cwd=cwd, check=False).returncode
+            with os.fdopen(fd, 'w') as out:
+                out.write(packet)
+        except OSError:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            raise
+        argv = [provider['executable'], '--in', str(cwd)]
+        if provider.get('model'):
+            argv += ['-m', provider['model']]
+        argv += ['chat', '--query-file', str(path)]
+
+        def cleanup():
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+    else:
+        argv = [provider['executable']]
+        if provider['local']:
+            argv += ['--oss', '--local-provider', provider['provider'], '--model', provider['model']]
+        elif provider.get('model'):
+            argv += ['--model', provider['model']]
+        argv += ['--', packet]
+    return argv, cleanup
+
+
+def launch(provider, cwd, packet, run=None, scratch=None):
+    argv, finalize = launch_argv(provider, cwd, packet, scratch=scratch)
+    if run is not None:
+        try:
+            return run(argv, cwd=cwd, check=False).returncode
         finally:
-            try: path.unlink()
-            except FileNotFoundError: pass
-    argv = [provider['executable']]
-    if provider['local']: argv += ['--oss', '--local-provider', provider['provider'], '--model', provider['model']]
-    elif provider.get('model'): argv += ['--model', provider['model']]
-    # Explicit -- ends options; prompt is one argv entry, never shell text.
-    argv += ['--', packet]
-    return run(argv, cwd=cwd, check=False).returncode
+            finalize()
+    proc, finalize = subprocess.Popen(argv, cwd=cwd), finalize
+    try:
+        return proc.wait()
+    finally:
+        finalize()
 
 
 def live_rows():
@@ -736,44 +1069,254 @@ def live_rows():
 MARKS = {'ready': 'Ready', 'wait': 'Wait ', 'needs_project': 'Needs', 'unknown': '  ?  '}
 
 
-# The hood (docs/brand), drawn for the terminal.
-BANNER = """\
-     ▄█▄
-    ▟█▀█▙
-   ▐█▘ ▝█▌
-   ██▖ ▗██
-  ▟███████▙
-"""
+# Hood mark (docs/brand/README.md) for the terminal — solid geometry, not halftone.
+HOOD_MARK = """\
+        ▄█▄
+       ▟█▀█▙
+      ▐█▘ ▝█▌
+      ██▖ ▗██
+     ▟███████▙"""
 
 
-def ordered(rows):
-    """Terminal-tab order, so numbers match the widget and named tabs."""
-    return sorted(rows, key=lambda r: r.get('tty', ''))
+def terminal_intro(hotkey=False):
+    """Branded header (hood on ink) for non-picker paths; picker uses ink_bar in choose()."""
+    if not sys.stdout.isatty():
+        return ''
+    hood = '\n'.join(ink_paint(' ' + line) for line in HOOD_MARK.splitlines()) if _brand_color_ok() else HOOD_MARK
+    if _brand_color_ok():
+        subtitle = 'session handoff' if hotkey else 'your work · any AI'
+        lines = [hood, '', ink_paint(' SKEPTIC '), ink_paint(' ' + subtitle + ' ', fg=SKEPTIC_GREY), '']
+    else:
+        lines = [hood, '', '  SKEPTIC', '  ' + ('session handoff' if hotkey else 'your work · any AI'), '']
+    if hotkey:
+        here = context_tty()
+        title = hint_tab_title()
+        if here or title:
+            bits = []
+            if here:
+                bits.append('tab ' + here)
+            if title:
+                bits.append(clean(title))
+            ctx = ' · '.join(bits)
+            lines.append(ink_paint(' ' + ctx + ' ', fg=SKEPTIC_GREY) if _brand_color_ok() else '  ' + ctx)
+        choose = 'Choose the engine to continue your work.'
+        lines.append(ink_paint(' ' + choose + ' ', fg=SKEPTIC_GREY) if _brand_color_ok() else '  ' + choose)
+    lines.append('')
+    return '\n'.join(lines) + '\n'
 
 
-ENGINES = {'codex': 'Codex', 'hermes': 'Hermes', 'claude': 'Claude Code'}
+# Back-compat name for tests and older references.
+BANNER = HOOD_MARK + '\n'
+
+
+def ordered(rows, prefer_tty=None):
+    """Terminal-tab order; optional tty first so '(this terminal)' is easy to spot."""
+    rows = sorted(rows, key=lambda r: r.get('tty', ''))
+    if prefer_tty:
+        rows.sort(key=lambda r: 0 if r.get('tty') == prefer_tty else 1)
+    return rows
+
+
+ENGINES = {'codex': 'Codex', 'hermes': 'Hermes', 'claude': 'Claude Code', 'cursor': 'Cursor Agent', 'antigravity': 'Antigravity'}
+
+
+def session_name(row):
+    """Plain name for the tab you are leaving."""
+    name = clean(row.get('label') or row.get('tab_title') or row.get('project') or 'Unknown session')
+    if row.get('frozen'):
+        return name + ' (usage limit)'
+    return name
+
+
+def handoff_from_label(here=None):
+    here = here if here is not None else context_tty()
+    return ('from tab ' + here) if here else 'pick the stuck tab'
+
+
+def engine_picker_title(row, here=None):
+    here = here if here is not None else context_tty()
+    base = 'Session Handoff: ' + session_name(row)
+    extra = handoff_from_label(here)
+    hint = hint_tab_title()
+    if hint and here and row.get('tty') == here:
+        extra = 'from tab ' + here + ' · ' + hint
+    base += ' (' + extra + ')'
+    return base
+
+
+def tab_picker_title(here=None):
+    here = here if here is not None else context_tty()
+    return 'Session Handoff — which tab? (' + handoff_from_label(here) + ')'
+
+
+def compact_session_label(r, here=None):
+    agent = r.get('agent', 'agent')
+    proj = clean(r.get('project') or 'no project')
+    name = r.get('label') or r.get('project') or 'Unknown session'
+    if r.get('frozen'):
+        state = 'usage limit'
+    elif r.get('verdict') == 'ready':
+        state = 'ready'
+    elif r.get('verdict') == 'wait':
+        state = 'busy'
+    else:
+        state = r.get('verdict') or 'unclear'
+    marker = ' ← this tab' if here and r.get('tty') == here else ''
+    return f"{name}{marker} · {agent} · {proj} · {state}"
+
+
+def current_tty():
+    """Terminal tab Skeptic was launched from (`ttys###`), if stdin is a TTY."""
+    try:
+        if not sys.stdin.isatty():
+            return None
+        name = os.ttyname(sys.stdin.fileno())
+        if not name:
+            return None
+        base = name.rsplit('/', 1)[-1]
+        return base if re.fullmatch(r'ttys[0-9]{3,4}', base) else None
+    except OSError:
+        return None
+
+
+def context_tty():
+    """Tab to treat as 'this terminal': hint from skeptic-switch, else stdin TTY."""
+    hint = os.environ.get('SKEPTIC_HINT_TTY', '').strip()
+    if re.fullmatch(r'ttys[0-9]{3,4}', hint):
+        return hint
+    return current_tty()
+
+
+def hint_tab_title():
+    return clean(os.environ.get('SKEPTIC_HINT_TITLE', '').strip())
+
+
+def continue_argv(argv):
+    """Argv for session continue after the engine picker; hotkey always uses widget confirm."""
+    out = list(argv)
+    if hotkey_handoff() and '--widget-switch' not in out:
+        out.append('--widget-switch')
+    return out
 
 
 def switch_open_session(rows=None, choose_fn=None, run=None):
     """Pick ONE open session by its tab title, then the engine to continue it.
-    Sessions you leave alone stay as they are (keep them for when Claude is back)."""
+    Sessions you leave alone stay as they are (keep them for when Claude is back).
+    Default: if launched from a tab that has a known agent, skip the tab list."""
+    import live_sessions as live
+    if hotkey_handoff():
+        hotkey_clear_handoff_tab()
     choose_fn = choose_fn or choose
-    rows = ordered(rows if rows is not None else live_rows()[0])
-    if not rows: print('No Claude, Codex or Hermes open right now.'); return 0
-    labels = []
-    for i, r in enumerate(rows, 1):
-        state = 'frozen, can switch' if r.get('frozen') else {'ready': 'can switch', 'wait': 'busy' if r.get('activity') == 'working' else 'wait', 'needs_project': 'no project yet'}.get(r.get('verdict'), 'unclear')
-        labels.append(f"{i}. {r.get('label') or r.get('project') or 'Unknown session'} — {r.get('agent', 'agent')}, {state}")
-    row = rows[choose_fn('Which session do you want to switch?', labels)]
+    here = context_tty()
+    title_from_hotkey = hint_tab_title()
+    rows = ordered(rows if rows is not None else live_rows()[0], prefer_tty=here)
+    row = None
+    force_list = os.environ.get('SKEPTIC_PICK_TAB') == '1'
+    hotkey = hotkey_handoff()
+    headless = hotkey_headless()
+    interactive = choose_fn is not choose or hotkey or (sys.stdin.isatty() and sys.stdout.isatty())
+    narrow = [candidate for candidate in rows if here and candidate.get('tty') == here]
+
+    def pick_session(candidates):
+        labels = [compact_session_label(candidate, here) for candidate in candidates]
+        if headless and choose_fn is choose:
+            import widget_switch
+            labels = [f'{idx + 1}. {label}' for idx, label in enumerate(labels)]
+            index = widget_switch.pick_engine_osascript(
+                list(range(len(labels))), labels, prompt='Choose the Terminal session to hand off.')
+            if index is None:
+                widget_switch.handoff_error('Could not open the Terminal session picker.')
+            if index is None or index is False:
+                return None
+            return candidates[index]
+        try:
+            return candidates[choose_fn(tab_picker_title(here), labels)]
+        except KeyboardInterrupt:
+            return None
+
+    if here and not force_list:
+        if hotkey and len(narrow) <= 1:
+            row = live.handoff_row_for_tty(here, title_from_hotkey, rows)
+        elif not hotkey:
+            row = live.resolve_handoff_row(rows, here, hint_title=title_from_hotkey or None)
+    if row is None:
+        if not rows:
+            detail = 'No Claude, Codex, Hermes, Cursor or Antigravity sessions found.'
+            if headless:
+                import widget_switch
+                widget_switch.handoff_error(detail)
+            else:
+                print(detail)
+            return 0
+        if not interactive:
+            print('Open a new Terminal tab (⌘T) and run: skeptic', file=sys.stderr)
+            print('(Claude’s ! shell cannot show the session picker.)', file=sys.stderr)
+            return 2
+        row = pick_session(narrow if hotkey and narrow and not force_list else rows)
+        if row is None:
+            return 0
     command = row.get('continue_command') or []
     if '--with' not in command[:-1]:
-        print('Not safe to switch that one yet: ' + clean((row.get('blocked_reasons') or [row.get('next_step') or 'unknown'])[0]), file=sys.stderr); return 2
+        reason = clean((row.get('blocked_reasons') or [row.get('next_step') or 'unknown'])[0])
+        detail = 'Handoff paused: ' + reason
+        if headless:
+            import widget_switch
+            widget_switch.handoff_error(detail)
+        else:
+            print(detail, file=sys.stderr)
+        return 2
+    if hotkey and row.get('tty') != here:
+        here = row.get('tty')
+        title_from_hotkey = row.get('tab_title') or row.get('label') or ''
     choices = row.get('destinations') or [command[command.index('--with') + 1]]
-    dest = choices[choose_fn('Continue "' + clean(row.get('label') or row.get('project') or 'this session') + '" with', [ENGINES.get(d, d) for d in choices])]
+    # Long titles duplicate the ink banner on ⌘⇧S; the picker chrome carries context.
+    pick_title = 'Choose engine' if hotkey else engine_picker_title(row, here)
+    if interactive:
+        try:
+            import usage_picker
+            engine_labels = usage_picker.choice_labels(choices)
+        except Exception:
+            engine_labels = [ENGINES.get(d, d) for d in choices]
+        dest = None
+        if hotkey:
+            import widget_switch
+            picked = widget_switch.pick_engine(choices, engine_labels, row, here or '', title_from_hotkey)
+            if picked is False:
+                return 0
+            if isinstance(picked, str):
+                dest = picked
+            elif picked is None:
+                import widget_switch
+                widget_switch.handoff_error('Could not open the engine picker. Re-run: python3 install.py --upgrade-integrations')
+                return 2
+        if dest is None:
+            try:
+                dest = choices[choose_fn(pick_title, engine_labels)]
+            except KeyboardInterrupt:
+                return 0
+    else:
+        dest = os.environ.get('SKEPTIC_AUTO_DEST', command[command.index('--with') + 1])
+        if dest not in choices:
+            dest = choices[0]
+        print('Non-interactive switch → ' + ENGINES.get(dest, dest) + ' (set SKEPTIC_AUTO_DEST to change)', file=sys.stderr)
+    if hotkey and interactive and dest:
+        import widget_switch
+        if not widget_switch.confirm_active_session(row, here or '', title_from_hotkey):
+            return 0
     argv = list(command)
     argv[argv.index('--with') + 1] = dest
-    if row.get('continue_cwd'): os.chdir(row['continue_cwd'])
-    return (run or main)(argv[1:])
+    if row.get('continue_cwd'):
+        try:
+            os.chdir(row['continue_cwd'])
+        except OSError:
+            detail = 'The selected session’s working directory is no longer accessible.'
+            if headless:
+                import widget_switch
+                widget_switch.handoff_error(detail)
+            else:
+                print(detail, file=sys.stderr)
+            return 2
+    return (run or main)(continue_argv(argv[1:]))
 
 
 def ready_cli(args, rows=None, run=None):
@@ -783,7 +1326,7 @@ def ready_cli(args, rows=None, run=None):
     if args.json:
         print(json.dumps({'summary': best, 'rows': rows}, indent=2)); return 0
     if not rows:
-        print('No open Claude, Codex or Hermes sessions.'); return 0
+        print('No open Claude, Codex, Hermes, Cursor or Antigravity sessions.'); return 0
     print('SKEPTIC — could another engine pick up?')
     for number, row in enumerate(rows, 1):
         print(f"{number}. {MARKS.get(row.get('verdict'), '  ?  ')}  {clean(row.get('label') or row['project'])}  ({row['agent']}, {clean(row['project'])}) — {clean(row['headline'])}")
@@ -799,10 +1342,54 @@ def ready_cli(args, rows=None, run=None):
     return 0
 
 
+def hotkey_clear_handoff_tab():
+    """Blank the ⌘⇧S tab — UI lives in Skeptic sheets, not scrollback."""
+    if hotkey_handoff() and sys.stdout.isatty():
+        try:
+            sys.stdout.write('\033[3J\033[H\033[2J')
+            sys.stdout.flush()
+        except OSError:
+            pass
+
+
+def handoff_user_line(message, stream=None):
+    """Plain message on stderr/stdout; grey when ⌘⇧S and color is available."""
+    stream = stream or sys.stderr
+    try:
+        columns = os.get_terminal_size(stream.fileno()).columns or 80
+    except OSError:
+        columns = 80
+    if hotkey_handoff() and _brand_color_ok(stream):
+        stream.write(picker_muted_row(message, columns, stream) + '\n')
+    else:
+        stream.write(message + '\n')
+
+
+def _pause_hotkey_tab(code):
+    """Keep the ⌘⇧S picker tab open when something failed so the message is readable."""
+    if code == 0 or not hotkey_handoff() or os.environ.get('SKEPTIC_HANDOFF_ERROR_SHOWN'):
+        return
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        try:
+            handoff_user_line('Handoff paused — press Enter to close this tab.', sys.stdout)
+            input()
+        except EOFError:
+            pass
+
+
 def main(argv=None):
     selected_argv = sys.argv[1:] if argv is None else argv
+    # ⌘⇧S: never drop into the legacy multi-step switch menu.
+    if hotkey_handoff() and selected_argv[:1] == ['switch'] and '--menu' in selected_argv:
+        return switch_open_session()
+    # Bare `skeptic` in a real Terminal: straight to open-tab → pick-engine (no Vitals, no extra menu).
     if not selected_argv:
-        selected_argv = ['sessions', 'open', '--continue', '--with', 'codex', '--project', str(Path.home())]
+        if os.environ.get('SKEPTIC_WIDGET_OPEN') == '1':
+            selected_argv = ['sessions', 'open', '--continue', '--with', 'codex', '--project', str(Path.home())]
+        else:
+            if not hotkey_handoff() and sys.stdout.isatty():
+                print(terminal_intro(hotkey=False), end='')
+            return switch_open_session()
     if selected_argv[:1] == ['managed']:
         from managed_cli import main as managed_main
         return managed_main(selected_argv[1:])
@@ -836,13 +1423,31 @@ def main(argv=None):
     parser.add_argument('--widget-switch', action='store_true', help='One native confirmation combines writer check and outgoing handoff approval; existing scope grants still required')
     parser.add_argument('--fresh-session-approval', action='store_true', help='Ask again for metadata and selected-transcript consent even when a matching persistent grant exists')
     args = parser.parse_args(selected_argv)
+    if hotkey_handoff() and args.command == 'session' and (args.action or 'continue') == 'continue':
+        args.widget_switch = True
     if args.command == 'ready': return ready_cli(args)
     state = None
     try:
         state = State(args.state_dir)
+        if hotkey_handoff() or getattr(args, 'widget_switch', False):
+            state.trust_session_context = True
+        if args.command == 'switch' and '--menu' not in selected_argv:
+            explicit_recover = bool(
+                args.session_id or args.session_root or getattr(args, 'session_file', None)
+            )
+            if explicit_recover:
+                args.command = 'session'
+                args.action = 'continue'
+                args.all_projects = not bool(args.session_id)
+            else:
+                state.close(); state = None
+                if sys.stdout.isatty() and not hotkey_handoff():
+                    print(terminal_intro(hotkey=False), end='')
+                return switch_open_session()
         if args.command == 'switch':
             args.interactive_switch = True
-            print(BANNER if sys.stdout.isatty() else '', end='')
+            if sys.stdout.isatty() and not hotkey_handoff():
+                print(terminal_intro(hotkey=False), end='')
             print('SKEPTIC — Your work. Your memory. Any AI.')
             workflow = choose('Continue your work', ['Switch one of my open sessions to another AI', 'Recover a Claude session (local, consent required)', 'Continue this project from approved notes and Git'])
             if workflow == 0:
@@ -891,9 +1496,12 @@ def main(argv=None):
         model = None
         if args.command == 'continue':
             model = requested_model(select_provider(state, args.provider), args.model)
+        workdir = os.path.abspath(os.path.expanduser(args.cwd)) if getattr(args, 'cwd', None) else os.getcwd()
+        if getattr(args, 'cwd', None):
+            os.chdir(workdir)
         target = model['id'] if model else args.provider
         if args.command in ('catchup', 'checkpoint') and not target: raise host.Denied('Use --with PROVIDER to identify the catch-up/checkpoint participant')
-        summary, packet = assemble(state, os.getcwd(), args.vault, args.task, target=target)
+        summary, packet = assemble(state, workdir, args.vault, args.task, target=target)
         if args.command == 'checkpoint':
             import continuity
             continuity.warn(continuity.Index(state).record(state.observation, target, 'explicit_checkpoint'))
@@ -904,22 +1512,46 @@ def main(argv=None):
         print(json.dumps(summary, indent=2, ensure_ascii=False))
         if args.command == 'status': return 0
         print('Selected provider: ' + clean(model['label']) + '\nLaunching interactive CLI; host trust/tool approvals still apply.', flush=True)
-        if not sys.stdin.isatty() or not sys.stdout.isatty(): raise host.Denied('Interactive launch requires Terminal')
-        # Recheck consent/root identity immediately before launch by fresh assembly.
+        if not hotkey_handoff() and (not sys.stdin.isatty() or not sys.stdout.isatty()):
+            raise host.Denied('Interactive launch requires Terminal')
+        widget = args.widget_switch or hotkey_handoff()
+        if widget:
+            import widget_switch
+            evidence = {'title': hint_tab_title() or 'Project context'}
+            if not widget_switch.confirm(summary, evidence, model['label'], packet):
+                raise host.Denied('Switch cancelled; no provider launched')
+        # Recheck consent and the reviewed context immediately before launch.
         state.settings = state.read('settings.json', {})
-        summary, packet = assemble(state, os.getcwd(), args.vault, args.task, target=model['id'])
+        state.no_new_grants = widget
+        try:
+            _, refreshed = assemble(state, workdir, args.vault, args.task, target=model['id'])
+        finally:
+            state.no_new_grants = False
+        if widget and refreshed != packet:
+            raise host.Denied('Approved context changed during review; prepare/review a fresh handoff')
+        packet = refreshed
         state.settings['recent'] = [model['id']] + [p for p in state.settings['recent'] if p != model['id']][:9]
         state.save(); state.event('launch_started', model['id'])
-        code = tracked_launch(state, model, os.getcwd(), packet, args.vault, args.task)
+        code = tracked_launch(state, model, workdir, packet, args.vault, args.task)
         if code: print(f'Provider exited {code}; project files preserved by Skeptic.', file=sys.stderr)
         return code
     except KeyboardInterrupt:
         print('Switch cancelled.', file=sys.stderr); return 130
     except (host.Denied, OSError, ValueError, subprocess.TimeoutExpired) as exc:
         detail = clean(exc) if isinstance(exc, host.Denied) else 'Local source missing, inaccessible or invalid. Check --project (original cwd), --id UUID and --cwd (destination). Use --conversation-only for approved transcript recovery. Original session untouched.'
-        print('Skeptic: ' + detail, file=sys.stderr); return 1
+        if hotkey_handoff():
+            hotkey_clear_handoff_tab()
+            if not os.environ.get('SKEPTIC_HANDOFF_ERROR_SHOWN'):
+                import widget_switch
+                widget_switch.handoff_error(detail)
+        else:
+            print('Skeptic: ' + detail, file=sys.stderr)
+        return 1
     finally:
         if state is not None: state.close()
 
 
-if __name__ == '__main__': sys.exit(main())
+if __name__ == '__main__':
+    exit_code = main()
+    _pause_hotkey_tab(exit_code)
+    sys.exit(exit_code)

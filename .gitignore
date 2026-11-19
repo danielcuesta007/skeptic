@@ -20,3 +20,5 @@ credentials.json
 .skeptic-local/
 
 apps/website/.build/
+apps/terminal/handoff-dialog/.build/
+apps/terminal/bin/skeptic-handoff-dialog

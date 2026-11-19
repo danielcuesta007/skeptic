@@ -17,13 +17,15 @@ class InstallScriptTests(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix='skeptic-install-')).resolve()  # /var is a symlink on macOS
         self.home = self.tmp / 'home'; self.home.mkdir()
-        self.archive = self.tmp / 'skeptic-0.1.0.tar.gz'
+        self.version = re.search(r'^VERSION="([^"]+)"$', SCRIPT.read_text(), re.M)[1]
+        self.release = 'skeptic-' + self.version
+        self.archive = self.tmp / (self.release + '.tar.gz')
         # The same file set as scripts/release.sh (git archive): every tracked file,
         # read from the working tree so uncommitted changes are tested too.
         tracked = subprocess.run(['git', 'ls-files', '-z'], cwd=ROOT, capture_output=True, check=True).stdout.decode().split('\0')
         with tarfile.open(self.archive, 'w:gz') as tar:
             for name in filter(None, tracked):
-                if (ROOT / name).exists(): tar.add(ROOT / name, arcname='skeptic-0.1.0/' + name, recursive=False)
+                if (ROOT / name).exists(): tar.add(ROOT / name, arcname=self.release + '/' + name, recursive=False)
         self.sha = hashlib.sha256(self.archive.read_bytes()).hexdigest()
 
     def tearDown(self):
@@ -44,7 +46,8 @@ class InstallScriptTests(unittest.TestCase):
         self.assertEqual(help_text.returncode, 0, help_text.stderr)
         self.assertIn('continue', help_text.stdout)
         self.assertTrue((self.home / '.claude/skills/skeptic/SKILL.md').exists())
-        self.assertTrue((self.home / '.local/share/skeptic/0.1.0/apps/terminal/switcher.py').exists())
+        self.assertTrue((self.home / '.local/share/skeptic' / self.version / 'apps/terminal/switcher.py').exists())
+        self.assertTrue((self.home / '.local/bin/skeptic-switch').exists())
         self.assertFalse((self.home / '.zshrc').exists(), '--no-profile is passed through')
 
     def test_upgrade_prunes_old_versions_but_nothing_else(self):
@@ -56,7 +59,7 @@ class InstallScriptTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse((share / '0.0.9').exists())
         self.assertTrue((share / '1.0-notes').exists())
-        self.assertTrue((share / '0.1.0').exists())
+        self.assertTrue((share / self.version).exists())
 
     def test_tampered_archive_installs_nothing(self):
         result = self.run_installer('0' * 64)

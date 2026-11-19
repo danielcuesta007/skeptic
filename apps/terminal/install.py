@@ -4,6 +4,7 @@ import hashlib
 import os
 from pathlib import Path
 import shlex
+import shutil
 import stat
 import time
 import sys
@@ -12,6 +13,13 @@ HERE = Path(__file__).resolve().parent
 MARKER = '# Skeptic terminal PATH'
 LEGACY_SKILLS = {'3e6a5458e20095613b14efa59806fe7a14570facbf4daa62a1659d95103605b1', 'fa46d1a626d7ea7a49929e17ae78ca365e2a5be93ec781fe0b4eac41048b1ae0', '1295e0560d0dac183f10a636b726bc611dd9ff5bb3484c5275bf2eef958f5286', '5c585bb4a704f8b5ec5a5b37d5f879fbbeaf5baee247726d30e4d53bf3af9e1f', '36bc21f2ac7cccbbafed1728c44aceb1b6962982db334529a8bd927a35877222'}  # + 12 Oct 2026 shipped versions
 
+LEGACY_HOTKEY = {
+    '177438553d72b3517d2cee2db8d8755871cf985f81e8935f733d4d7b40656b89',
+    '8a0e1b60a76346989e73b47e281d54e972339236a0716946cf81d09ce35c6762',
+    'e50088fa4db600b342b5f95640ab9b54b444a8478bb7fa9edcdbef324b8c9bc7',
+    'd5f5532867e1a8d138b05e37ed0fa1cccf2c37729ff8c0e913bfaa7dec9472a6',
+}
+
 
 def safe_parent(path):
     for item in (path, *path.parents):
@@ -19,14 +27,14 @@ def safe_parent(path):
     path.mkdir(parents=True, exist_ok=True)
 
 
-def write_owned(path, text, mode=0o600, upgrade=False):
+def write_owned(path, text, mode=0o600, upgrade=False, legacy_hashes=LEGACY_SKILLS):
     if path.is_symlink(): raise ValueError('Refusing symlink: ' + str(path))
     if path.exists():
         info = path.stat()
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid(): raise ValueError('Unsafe install target')
         if path.read_text() == text:
             path.chmod(mode); return
-        if upgrade and hashlib.sha256(path.read_bytes()).hexdigest() in LEGACY_SKILLS:
+        if upgrade and hashlib.sha256(path.read_bytes()).hexdigest() in legacy_hashes:
             fd = os.open(str(path), os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
             try:
                 current = os.fstat(fd)
@@ -68,6 +76,8 @@ def install(home, integrations=True, profile=True, upgrade=False, launcher_too=T
                 os.lseek(fd, 0, os.SEEK_END)
                 os.write(fd, ('\n' + MARKER + '\nexport PATH="$HOME/.local/bin:$PATH"\n').encode())
         finally: os.close(fd)
+    install_handoff_dialog(home, bindir)
+    install_hotkey_widget(home, bindir, upgrade=upgrade)
     install_skills(home, integrations, upgrade)
     print('Installed: ' + str(bindir / 'skeptic'))
     print('Existing terminals: export PATH="$HOME/.local/bin:$PATH"; rehash')
@@ -80,6 +90,57 @@ def install_skills(home, integrations=True, upgrade=False):
         if integrations is not True and provider not in integrations: continue
         folder = base / 'skeptic'; safe_parent(folder)
         write_owned(folder / 'SKILL.md', (HERE / ('skeptic-' + provider + '.md')).read_text(), upgrade=upgrade)
+
+
+def install_hotkey_widget(home, bindir, upgrade=False):
+    """⌘⇧S launcher and picker tab (sources live in apps/terminal/widget/)."""
+    widget_dir = home / '.skeptic-widget'
+    safe_parent(widget_dir)
+    src = HERE / 'widget'
+    picker_src = src / 'skeptic-picker.command'
+    switch_src = src / 'skeptic-switch'
+    if not picker_src.is_file() or not switch_src.is_file():
+        return
+    picker_dst = widget_dir / 'skeptic-picker.command'
+    switch_dst = bindir / 'skeptic-switch'
+    picker_text, switch_text = picker_src.read_text(), switch_src.read_text()
+
+    for target, content, legacy_hashes in (
+            (picker_dst, picker_text, ()), (switch_dst, switch_text, LEGACY_HOTKEY)):
+        try:
+            write_owned(target, content, 0o755, upgrade=upgrade, legacy_hashes=legacy_hashes)
+        except ValueError as exc:
+            if not str(exc).startswith('Existing file differs'):
+                raise
+            print(str(exc), file=sys.stderr)
+
+
+def install_handoff_dialog(home, bindir):
+    """Build the branded AppKit handoff sheet and install ~/.local/bin copy."""
+    build = HERE / 'handoff-dialog' / 'build.sh'
+    bundled = HERE / 'bin' / 'skeptic-handoff-dialog'
+    if build.is_file():
+        import subprocess
+        try:
+            subprocess.run(['/bin/sh', str(build)], check=True, cwd=str(build.parent), timeout=120)
+        except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired) as exc:
+            print('Handoff dialog build skipped: ' + str(exc), file=sys.stderr)
+    if not bundled.is_file():
+        return
+    target = bindir / 'skeptic-handoff-dialog'
+    data = bundled.read_bytes()
+    if target.is_file() and target.read_bytes() == data:
+        target.chmod(0o755)
+        return
+    if target.exists() and target.stat().st_size == len(data) and target.read_bytes() == data:
+        target.chmod(0o755)
+        return
+    tmp = target.with_suffix('.tmp')
+    if tmp.exists():
+        tmp.unlink()
+    shutil.copyfile(bundled, tmp)
+    tmp.chmod(0o755)
+    os.replace(tmp, target)
 
 
 def activate_launcher(home, source=HERE):
