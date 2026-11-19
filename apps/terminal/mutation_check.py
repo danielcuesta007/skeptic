@@ -10,7 +10,7 @@ import switcher
 source = Path(switcher.__file__).read_text()
 faults = [
  ('wrong-project', "cwd = Path(os.path.abspath(cwd))", "cwd = Path.home()", 'test_current_directory_repository'),
- ('invented-match', "if repo in references(doc['text'])", "if True", 'test_no_invented_match'),
+ ('invented-match', "refs = references(doc['text'])", "refs = list(roots)", 'test_no_invented_match'),
  ('skip-vault-context', "if matches:\n                folder", "if False:\n                folder", 'test_exact_repository_match'),
  ('ignore-mapping', "if mapped in eligible: matches = [mapped]", "if False: matches = [mapped]", 'test_ambiguous_mapping_picker'),
  ('missing-grant-bypass', "if old and old.get('kind') == kind and host.identity_matches(old.get('identity'), info, legacy=True):", "if True:", 'test_approval_missing_noninteractive'),
@@ -20,7 +20,7 @@ faults = [
  ('forget-revoke', "state.settings['grants'].pop(path, None)", "pass", 'test_revocation'),
  ('no-repo-instructions', "docs = {str(Path(repo) / p): d for p, d in snapshot['documents'].items()}", "docs = {}", 'test_instruction_and_user_task'),
  ('no-subfolder-instructions', "instructions.extend(str(parent / name) for name in RULES)", "pass", 'test_subdirectory_instructions'),
- ('no-linked-context', "if linked:", "if False:", 'test_exact_link_in_scope'),
+ ('no-linked-context', "if linked:\n                    extras = safe_docs", "if False:\n                    extras = safe_docs", 'test_exact_link_in_scope'),
  ('hide-continuity-gap', "'Unsaved conversation/current request and hidden reasoning were not recovered. No transcript scraping.'", "'Unknown.'", 'test_unsaved_gap'),
  ('wrong-launch-directory', "return run(argv, cwd=cwd, check=False).returncode", "return run(argv, cwd='/', check=False).returncode", 'test_safe_launch_both_directions_and_failure'),
  ('shell-launch', "return run(argv, cwd=cwd, check=False).returncode", "return run(argv, cwd=cwd, shell=True, check=False).returncode", 'test_safe_launch_both_directions_and_failure'),

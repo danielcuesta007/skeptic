@@ -186,6 +186,26 @@ class HandoffTabTests(unittest.TestCase):
         self.assertEqual(row.get('tty'), 'ttys099')
         self.assertEqual(row.get('association'), 'this Terminal tab (⌘⇧S)')
 
+    def test_active_tab_does_not_count_itself_as_a_competing_writer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            row = live.base({'pid': 42, 'tty': 'ttys099', 'agent': 'Codex'})
+            row.update(source='codex', cwd=tmp, activity='working')
+            with patch.object(live, 'repo_root', side_effect=lambda path: tmp if path == tmp else None):
+                live.assess_handoff_row(row, [dict(row)])
+                self.assertTrue(row['continue_command'])
+                live.assess_handoff_row(row, [dict(row, pid=43)])
+                self.assertIsNone(row['continue_command'])
+
+    def test_unlinked_codex_uses_project_context_without_reading_transcript(self):
+        agent = {'pid': 42, 'tty': 'ttys099', 'agent': 'Codex'}
+        with patch.object(live, 'process_cwd', return_value='/workspace/project'), \
+             patch.object(live, 'codex_candidates', side_effect=AssertionError('Unlinked transcript inspected')):
+            row = live.codex(agent, Path('/fixture'), 1, {})
+        self.assertEqual(row['work_cwd'], '/workspace/project')
+        self.assertFalse(row.get('source_path'))
+        self.assertTrue(live.needs_active_handoff_confirm(row))
+        self.assertEqual(live.continue_command(row, '/workspace/project')[:2], ['skeptic', 'continue'])
+
 
 class HandoffResolveTests(unittest.TestCase):
     def test_hint_title_disambiguates_same_tty(self):

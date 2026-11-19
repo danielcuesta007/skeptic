@@ -3,22 +3,16 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
 DIALOG_TITLE = 'Skeptic · Session Handoff'
-APPROVE_BUTTON = 'Hand off'
 CANCEL_BUTTON = 'Cancel'
 CLOSE_APPROVE_BUTTON = 'Close stuck tab'
 CLOSE_KEEP_BUTTON = 'Keep tab'
 ACTIVE_APPROVE_BUTTON = 'Switch agent'
 ACTIVE_KEEP_BUTTON = 'Keep working'
-
-SCRIPT = rf'''on run argv
-    set messageText to item 1 of argv
-    set response to display dialog messageText with title "{DIALOG_TITLE}" buttons {{"{CANCEL_BUTTON}", "{APPROVE_BUTTON}"}} default button "{APPROVE_BUTTON}" cancel button "{CANCEL_BUTTON}" with icon note
-    return button returned of response
-end run'''
 
 EXISTING_SCRIPT = rf'''on run argv
     set targetTTY to item 1 of argv
@@ -103,7 +97,8 @@ ENGINE_LIST_SCRIPT = r'''on run argv
 end run'''
 
 
-def pick_engine_osascript(engine_ids, labels, run=None):
+def pick_engine_osascript(
+        engine_ids, labels, run=None, *, prompt='Choose the engine to continue your work.'):
     """Standard macOS list — reliable when AppKit sheet cannot run in this context."""
     run = run or subprocess.run
     if not labels:
@@ -111,13 +106,13 @@ def pick_engine_osascript(engine_ids, labels, run=None):
     try:
         result = run(
             ['/usr/bin/osascript', '-e', ENGINE_LIST_SCRIPT, DIALOG_TITLE,
-             'Choose the engine to continue your work.'] + list(labels),
+             prompt] + list(labels),
             capture_output=True, text=True, timeout=300,
         )
     except (OSError, subprocess.SubprocessError):
         return None
     if result.returncode != 0:
-        return False
+        return None
     picked = (result.stdout or '').strip()
     if not picked:
         return False
@@ -132,7 +127,13 @@ def _native_dialog(payload, run=None):
     ran = _native_dialog_run(payload, run=run)
     if ran is None:
         return None
-    return ran[0] == 0
+    code, marker = ran
+    if marker == 'cancel':
+        return False
+    expected = 'reviewed' if payload.get('kind') == 'confirm' else 'ok'
+    if marker == expected and code == 0:
+        return True
+    return None
 
 
 def _handoff_session_name(row, hint_title=''):
@@ -165,15 +166,15 @@ def handoff_error(message, run=None):
     if _native_dialog(payload, run=run) is not None:
         os.environ['SKEPTIC_HANDOFF_ERROR_SHOWN'] = '1'
         return
-    script = (
-        f'display dialog {json.dumps(body)} with title "{DIALOG_TITLE}" '
-        f'buttons {{"OK"}} default button "OK" with icon caution'
-    )
+    script = '''on run argv
+        display dialog (item 1 of argv) with title (item 2 of argv) buttons {"OK"} default button "OK" with icon caution
+    end run'''
     try:
-        run(['/usr/bin/osascript', '-e', script], timeout=120)
+        run(['/usr/bin/osascript', '-e', script, body, DIALOG_TITLE], check=True, timeout=120)
     except (OSError, subprocess.SubprocessError):
-        pass
-    os.environ['SKEPTIC_HANDOFF_ERROR_SHOWN'] = '1'
+        print(body, file=sys.stderr)
+    else:
+        os.environ['SKEPTIC_HANDOFF_ERROR_SHOWN'] = '1'
 
 
 def pick_engine(engine_ids, labels, row, hint_tty='', hint_title='', run=None):
@@ -218,34 +219,25 @@ def confirm(summary, evidence, provider, packet, run=None):
         'lastRequest': latest[:400] if latest else '',
         'folder': short_project,
         'digest': digest_short,
+        'packet': packet,
     }
     approved = _native_dialog(payload, run=run)
     if approved is not None:
         return approved
-    lines = [
-        'SKEPTIC · Session Handoff',
-        'Your work. Your memory. Any AI.',
-        '',
-        'Hand off to: ' + str(provider),
-        'Conversation: ' + str(evidence.get('title') or 'Untitled'),
-    ]
-    if latest:
-        lines.append('Last request: ' + (latest[:200] + '…' if len(latest) > 200 else latest))
-    lines.extend([
-        'Folder: ' + short_project,
-        '',
-        'Skeptic sends the filtered packet shown in Terminal to the new engine. '
-        'Confirm background tools in the original tab are idle. '
-        'After the new engine is running, Skeptic will ask whether to close the stuck tab.',
-        '',
-        'Packet SHA-256: ' + digest_short,
-    ])
-    text = '\n'.join(lines)
-    try:
-        result = run(['/usr/bin/osascript', '-e', SCRIPT, text], capture_output=True, text=True, timeout=300)
-    except (OSError, subprocess.SubprocessError):
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        preview = ('run skeptic session continue with the original session selection and --with ENGINE.'
+                   if evidence.get('source_key') else 'run skeptic continue --widget-switch --with ENGINE from the selected project.')
+        handoff_error('Could not show the outgoing packet. In Terminal, ' + preview, run=run)
         return False
-    return result.returncode == 0 and result.stdout.strip() == APPROVE_BUTTON
+    print('Hand off to: ' + str(provider), flush=True)
+    print('Conversation: ' + str(evidence.get('title') or 'Untitled'), flush=True)
+    print('COMPLETE FILTERED RECOVERY PACKET\n' + packet, flush=True)
+    print('Outgoing evidence SHA-256: ' + digest, flush=True)
+    try:
+        return input('After reviewing the packet and checking background writers, queued turns and automatic '
+                     'continuation, type project-clear send to approve. Anything else cancels: ').strip() == 'project-clear send'
+    except (EOFError, KeyboardInterrupt):
+        return False
 
 
 CLOSE_SCRIPT = rf'''on run argv
@@ -278,6 +270,7 @@ def confirm_active_session(row, hint_tty='', hint_title='', run=None):
         'tty': hint_tty or row.get('tty') or '',
         'tabTitle': hint_title or row.get('tab_title') or '',
         'usageQuota': usage,
+        'activityUnverified': bool(row.get('queued_turns_unknown')),
     }
     approved = _native_dialog(payload, run=run)
     if approved is not None:
@@ -285,13 +278,13 @@ def confirm_active_session(row, hint_tty='', hint_title='', run=None):
     lines = [
         'SKEPTIC · Session Handoff',
         '',
-        'This session is still running.',
+        ('This session’s queued turns are unverified.' if row.get('queued_turns_unknown') else 'This session is still running.'),
         '',
         'On this tab: ' + name,
         'Quota: ' + usage,
         'Terminal tab: ' + tab_line,
         '',
-        'End this session and switch to another agent? The handoff packet will open in a new engine.',
+        'Start a handoff to another agent? The handoff packet will open in a new engine.',
     ]
     text = '\n'.join(lines)
     try:

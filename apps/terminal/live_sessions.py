@@ -217,27 +217,6 @@ def process_cwd(pid):
     return None
 
 
-def codex_infer_meta(agent, home):
-    """Best-effort Codex thread for this live process when no owner link exists."""
-    cwd = process_cwd(agent['pid'])
-    if not cwd:
-        return None
-    pool = [c for c in codex_candidates(home) if (c.get('cwd') or '') == cwd]
-    if not pool:
-        return None
-    pool.sort(key=lambda c: c.get('updated_at') or 0, reverse=True)
-    best = pool[0]
-    if len(pool) > 1:
-        recent = best.get('updated_at') or 0
-        runner = pool[1].get('updated_at') or 0
-        if recent and runner and abs(recent - runner) < 300000:
-            return None
-    path = Path(best.get('rollout_path') or '')
-    if home / '.codex/sessions' not in path.parents:
-        return None
-    return best
-
-
 def codex_row(agent, home, started, meta, association):
     row = base(agent)
     path = Path(meta['rollout_path'])
@@ -266,9 +245,10 @@ def codex(agent, home, started, links):
             meta = matches[0]
             association = 'owner-confirmed (not automatically verified)'
     if meta is None:
-        meta = codex_infer_meta(agent, home)
-        association = 'inferred from Codex metadata and process working directory'
-    if meta is None:
+        cwd = process_cwd(agent['pid']) or ''
+        row.update(source='codex', cwd=cwd, work_cwd=cwd, queued_turns_unknown=True,
+                   task='Continue work from this Terminal tab',
+                   activity_evidence='Project context only until the conversation is linked')
         return row
     return codex_row(agent, home, started, meta, association)
 
@@ -443,6 +423,8 @@ def needs_active_handoff_confirm(row, hint_title=''):
         return False
     if row.get('source') == 'terminal' and row.get('activity') in ('idle', 'unknown', None):
         return False
+    if row.get('queued_turns_unknown'):
+        return True
     if row.get('activity') != 'working':
         return False
     if row.get('source') in ('terminal',) and not row.get('session_id') and not row.get('source_path'):
@@ -469,10 +451,11 @@ def assess_handoff_row(row, peers):
     from_notes = not project and row.get('source') in ('claude', 'codex', 'terminal') and repo_root(vault) == vault
     if from_notes:
         project = vault
-    row['project_root'] = project
     row['project'] = (Path(project).name + ' (your notes)' if from_notes else Path(project).name) if project else (
         'Home; no repository yet' if work and os.path.realpath(work) == os.path.realpath(Path.home()) else 'Project unknown')
     blockers = []
+    if row.get('source') == 'terminal' and not work:
+        blockers.append('Could not read the selected Terminal tab’s working directory')
     frozen = row.get('frozen')
     if row.get('queued_turns'):
         blockers.append('Codex has queued continuation; resolve it before handoff')
@@ -484,7 +467,10 @@ def assess_handoff_row(row, peers):
         row['project'] = Path(vault).name + ' (your notes)'
     elif not project:
         blockers.append('No repository in the session\'s current directory')
-    busy_peers = [r for r in peers if r is not row and project and repo_root(r.get('work_cwd') or r.get('cwd')) == project
+    row['project_root'] = project
+    busy_peers = [r for r in peers if r is not row
+                  and not (row.get('pid') and (r.get('pid'), r.get('tty')) == (row['pid'], row.get('tty')))
+                  and project and repo_root(r.get('work_cwd') or r.get('cwd')) == project
                   and r.get('activity') == 'working' and not r.get('frozen')]
     if busy_peers:
         blockers.append('Another agent is working in this repository; wait or pick one writer')

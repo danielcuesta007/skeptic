@@ -126,6 +126,33 @@ class SwitchTests(unittest.TestCase):
         with patch('sys.stdin.isatty', return_value=False): summary, _ = self.packet()
         self.assertIsNone(summary['knowledge'])
 
+    def test_same_basename_does_not_bind_unrelated_vault_notes(self):
+        other = self.root / 'unrelated' / self.repo.name
+        other.mkdir(parents=True)
+        self.status.write_text(f'---\npaths:\n  - {other}\n---\n# Atlas\n## Current State\nOther project')
+        with patch('sys.stdin.isatty', return_value=False):
+            summary, _ = self.packet()
+        self.assertIsNone(summary['knowledge'])
+
+    def test_project_widget_requires_confirmation_and_rejects_changed_packet(self):
+        args = ['continue', '--with', 'codex', '--widget-switch', '--cwd', str(self.repo)]
+        self.addCleanup(os.chdir, os.getcwd())
+        model = {'id': 'codex', 'label': 'Codex'}
+        for approved, refreshed in ((False, 'packet'), (True, 'changed'), (True, 'packet')):
+            with self.subTest(approved=approved, refreshed=refreshed), \
+                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()), \
+                 patch.object(s, 'State', return_value=self.state), patch.object(self.state, 'close'), \
+                 patch.object(s, 'select_provider', return_value=model), \
+                 patch.object(s, 'assemble', side_effect=[({}, 'packet'), ({}, refreshed)]), \
+                 patch('widget_switch.confirm', return_value=approved) as confirm, \
+                 patch.object(s, 'tracked_launch', return_value=0) as launch, \
+                 patch.object(s.sys.stdin, 'isatty', return_value=True), \
+                 patch.object(s.sys.stdout, 'isatty', return_value=True):
+                launched = approved and refreshed == 'packet'
+                self.assertEqual(s.main(args), 0 if launched else 1)
+                self.assertEqual(confirm.call_args.args[-1], 'packet')
+                self.assertEqual(launch.called, launched)
+
     def test_trusted_handoff_skips_vault_picker(self):
         self.status.write_text('# Atlas\n## Current State\nUnknown')
         self.state.trust_session_context = True

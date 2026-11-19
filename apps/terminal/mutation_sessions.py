@@ -23,7 +23,7 @@ faults = [
  ('drop-compaction', 'history', "if row.get('isMeta') or row.get('type') not in ('user', 'assistant', 'system', 'progress'): continue", "if row.get('isMeta') or row.get('isCompactSummary') or row.get('type') not in ('user', 'assistant', 'system', 'progress'): continue", 'test_compaction_summary_supported'),
  ('hide-chain-gap', 'history', "'chain_gap': gap, 'tool_tally': tally}", "'chain_gap': False, 'tool_tally': tally}", 'test_cycle_or_parent_gap_disclosed'),
  ('lose-latest-user', 'history', "retained = [r for r in anchors if r and r not in retained] + retained", 'retained = retained', 'test_latest_user_survives_many_progress_messages'),
- ('wrong-home-repository', 'switch', "home_session = session is not None and (Path(cwd) == Path.home() or conversation_only or vault_session)", 'home_session = False', 'test_home_sessions_no_home_scan'),
+ ('wrong-home-repository', 'switch', "try: repo = str(cwd) if home_session else repository(cwd)", "try: repo = repository(cwd)", 'test_home_sessions_no_home_scan'),
  ('ignore-destination-confirmation', 'switch', '            else: cwd = candidates[choice]', '            else: cwd = candidates[0]', 'test_home_referenced_repository_confirmed'),
  ('drop-session-from-context', 'switch', "docs[session['source_key']] = session['document']", 'pass', 'test_obsidian_matching_and_context_attribution'),
  ('source-hash-not-checked', 'history', "if digest != snapshot['snapshot_sha256']:", 'if False:', 'test_changed_snapshot_blocks_launch'),

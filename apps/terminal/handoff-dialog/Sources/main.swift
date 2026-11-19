@@ -29,7 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let panelWidth: CGFloat = payload.kind == "engine_picker" ? 372 : 388
         let panelHeight: CGFloat = payload.kind == "engine_picker"
             ? max(panelWidth + 80, CGFloat(400 + engineCount * 64))
-            : 520
+            : (payload.kind == "confirm" ? 600 : 520)
         let content = HandoffDialogView(
             payload: payload,
             onDone: { [weak self] approved, engineId in
@@ -96,7 +96,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 try? id.write(toFile: path, atomically: true, encoding: .utf8)
             }
         } else if let path = Self.resultPath() {
-            let marker = approved ? "ok" : "cancel"
+            let marker = approved ? (payload.kind == "confirm" ? "reviewed" : "ok") : "cancel"
             try? marker.write(toFile: path, atomically: true, encoding: .utf8)
         }
         exitCode = approved ? 0 : 1

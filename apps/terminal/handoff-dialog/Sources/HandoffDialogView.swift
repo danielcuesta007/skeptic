@@ -12,6 +12,8 @@ struct HandoffPayload: Decodable {
     var lastRequest: String?
     var folder: String?
     var digest: String?
+    var packet: String?
+    var activityUnverified: Bool?
     var tty: String?
     var tabTitle: String?
     var usageQuota: String?
@@ -23,6 +25,7 @@ struct HandoffDialogView: View {
     let onDone: (Bool, String?) -> Void
     @State private var selectedEngineId: String?
     @State private var actionsEnabled = false
+    @State private var writerChecked = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -96,25 +99,24 @@ struct HandoffDialogView: View {
             Divider().overlay(SkepticBrand.graphite.opacity(0.25))
             row("Hand off to", payload.provider ?? "—")
             row("Conversation", payload.conversation ?? "Untitled")
-            if let last = payload.lastRequest, !last.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("LAST REQUEST")
-                        .font(SkepticBrand.labelCaps)
-                        .foregroundStyle(SkepticBrand.grey)
-                    Text(last)
-                        .font(SkepticBrand.body)
-                        .foregroundStyle(SkepticBrand.ink)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
             row("Folder", payload.folder ?? "—")
-            Text(
-                "Skeptic sends the filtered packet in Terminal to the new engine. "
-                    + "Confirm background tools in the original tab are idle. "
-                    + "After the new engine is running, Skeptic will ask whether to close the stuck tab."
-            )
-            .font(SkepticBrand.footnote)
-            .foregroundStyle(SkepticBrand.graphite)
+            if let packet = payload.packet, !packet.isEmpty {
+                Text("OUTGOING PACKET")
+                    .font(SkepticBrand.labelCaps)
+                    .foregroundStyle(SkepticBrand.grey)
+                ScrollView {
+                    Text(packet)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(SkepticBrand.ink)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(height: 112)
+            }
+            Toggle("I checked that background writers, queued turns and automatic continuation are inactive.",
+                   isOn: $writerChecked)
+                .toggleStyle(.checkbox)
+                .font(SkepticBrand.footnote)
             if let digest = payload.digest, !digest.isEmpty {
                 Text("Packet SHA-256: \(digest)")
                     .font(.system(size: 10, weight: .medium, design: .monospaced))
@@ -195,7 +197,7 @@ struct HandoffDialogView: View {
 
     private var activeSessionBody: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("This session is still running.")
+            Text(payload.activityUnverified == true ? "This session’s queued turns are unverified." : "This session is still running.")
                 .font(SkepticBrand.bodySemibold)
                 .foregroundStyle(SkepticBrand.ink)
             Divider().overlay(SkepticBrand.graphite.opacity(0.25))
@@ -293,6 +295,14 @@ struct HandoffDialogView: View {
         }
     }
 
+    private var canApprove: Bool {
+        guard actionsEnabled else { return false }
+        if payload.kind == "confirm" {
+            return writerChecked && !(payload.packet ?? "").isEmpty
+        }
+        return payload.kind != "engine_picker" || selectedEngineId != nil
+    }
+
     private var actionRow: some View {
         HStack(spacing: 10) {
             Spacer(minLength: 0)
@@ -313,7 +323,7 @@ struct HandoffDialogView: View {
             }
 
             Button {
-                guard actionsEnabled else { return }
+                guard canApprove else { return }
                 let engineId = payload.kind == "engine_picker" ? selectedEngineId : nil
                 let approved = payload.kind == "error" || engineId != nil || payload.kind != "engine_picker"
                 onDone(approved, engineId)
@@ -329,7 +339,7 @@ struct HandoffDialogView: View {
                     )
             }
             .buttonStyle(.plain)
-            .disabled(!actionsEnabled || (payload.kind == "engine_picker" && selectedEngineId == nil))
+            .disabled(!canApprove)
         }
         .padding(.top, 18)
     }
