@@ -5,8 +5,8 @@
 class Skeptic < Formula
   desc "Switch AI coding agents mid-task without losing your work"
   homepage "https://skeptic.pages.dev"
-  url "https://github.com/danielcuesta007/skeptic/releases/download/v0.1.0/skeptic-0.1.0.tar.gz"
-  sha256 "9988c22478bf3a9ea4cbed29e949e07320bc89401b7f234b8bf3f4e5dbdd22bf"
+  url "https://github.com/danielcuesta007/skeptic/releases/download/v0.1.1/skeptic-0.1.1.tar.gz"
+  sha256 "2fa8a60fc90b6ba140725fa394f580854e9d1a8245e0900bbfa8cc47834d57ce"
   license "MIT"
 
   depends_on "python@3.13"
