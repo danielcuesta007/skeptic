@@ -225,8 +225,8 @@ def confirm(summary, evidence, provider, packet, run=None):
     if approved is not None:
         return approved
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
-        preview = ('use skeptic session handoff with the original session selection.'
-                   if evidence.get('source_key') else 'run skeptic handoff from the selected project.')
+        preview = ('run skeptic session continue with the original session selection and --with ENGINE.'
+                   if evidence.get('source_key') else 'run skeptic continue --widget-switch --with ENGINE from the selected project.')
         handoff_error('Could not show the outgoing packet. In Terminal, ' + preview, run=run)
         return False
     print('Hand off to: ' + str(provider), flush=True)
