@@ -469,10 +469,11 @@ def assess_handoff_row(row, peers):
     from_notes = not project and row.get('source') in ('claude', 'codex', 'terminal') and repo_root(vault) == vault
     if from_notes:
         project = vault
-    row['project_root'] = project
     row['project'] = (Path(project).name + ' (your notes)' if from_notes else Path(project).name) if project else (
         'Home; no repository yet' if work and os.path.realpath(work) == os.path.realpath(Path.home()) else 'Project unknown')
     blockers = []
+    if row.get('source') == 'terminal' and not work:
+        blockers.append('Could not read the selected Terminal tab’s working directory')
     frozen = row.get('frozen')
     if row.get('queued_turns'):
         blockers.append('Codex has queued continuation; resolve it before handoff')
@@ -484,7 +485,10 @@ def assess_handoff_row(row, peers):
         row['project'] = Path(vault).name + ' (your notes)'
     elif not project:
         blockers.append('No repository in the session\'s current directory')
-    busy_peers = [r for r in peers if r is not row and project and repo_root(r.get('work_cwd') or r.get('cwd')) == project
+    row['project_root'] = project
+    busy_peers = [r for r in peers if r is not row
+                  and not (row.get('pid') and (r.get('pid'), r.get('tty')) == (row['pid'], row.get('tty')))
+                  and project and repo_root(r.get('work_cwd') or r.get('cwd')) == project
                   and r.get('activity') == 'working' and not r.get('frozen')]
     if busy_peers:
         blockers.append('Another agent is working in this repository; wait or pick one writer')

@@ -186,6 +186,16 @@ class HandoffTabTests(unittest.TestCase):
         self.assertEqual(row.get('tty'), 'ttys099')
         self.assertEqual(row.get('association'), 'this Terminal tab (⌘⇧S)')
 
+    def test_active_tab_does_not_count_itself_as_a_competing_writer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            row = live.base({'pid': 42, 'tty': 'ttys099', 'agent': 'Codex'})
+            row.update(source='codex', cwd=tmp, activity='working')
+            with patch.object(live, 'repo_root', side_effect=lambda path: tmp if path == tmp else None):
+                live.assess_handoff_row(row, [dict(row)])
+                self.assertTrue(row['continue_command'])
+                live.assess_handoff_row(row, [dict(row, pid=43)])
+                self.assertIsNone(row['continue_command'])
+
 
 class HandoffResolveTests(unittest.TestCase):
     def test_hint_title_disambiguates_same_tty(self):

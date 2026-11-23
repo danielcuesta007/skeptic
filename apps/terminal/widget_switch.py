@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -103,7 +104,8 @@ ENGINE_LIST_SCRIPT = r'''on run argv
 end run'''
 
 
-def pick_engine_osascript(engine_ids, labels, run=None):
+def pick_engine_osascript(
+        engine_ids, labels, run=None, *, prompt='Choose the engine to continue your work.'):
     """Standard macOS list — reliable when AppKit sheet cannot run in this context."""
     run = run or subprocess.run
     if not labels:
@@ -111,13 +113,13 @@ def pick_engine_osascript(engine_ids, labels, run=None):
     try:
         result = run(
             ['/usr/bin/osascript', '-e', ENGINE_LIST_SCRIPT, DIALOG_TITLE,
-             'Choose the engine to continue your work.'] + list(labels),
+             prompt] + list(labels),
             capture_output=True, text=True, timeout=300,
         )
     except (OSError, subprocess.SubprocessError):
         return None
     if result.returncode != 0:
-        return False
+        return None
     picked = (result.stdout or '').strip()
     if not picked:
         return False
@@ -165,15 +167,15 @@ def handoff_error(message, run=None):
     if _native_dialog(payload, run=run) is not None:
         os.environ['SKEPTIC_HANDOFF_ERROR_SHOWN'] = '1'
         return
-    script = (
-        f'display dialog {json.dumps(body)} with title "{DIALOG_TITLE}" '
-        f'buttons {{"OK"}} default button "OK" with icon caution'
-    )
+    script = '''on run argv
+        display dialog (item 1 of argv) with title (item 2 of argv) buttons {"OK"} default button "OK" with icon caution
+    end run'''
     try:
-        run(['/usr/bin/osascript', '-e', script], timeout=120)
+        run(['/usr/bin/osascript', '-e', script, body, DIALOG_TITLE], check=True, timeout=120)
     except (OSError, subprocess.SubprocessError):
-        pass
-    os.environ['SKEPTIC_HANDOFF_ERROR_SHOWN'] = '1'
+        print(body, file=sys.stderr)
+    else:
+        os.environ['SKEPTIC_HANDOFF_ERROR_SHOWN'] = '1'
 
 
 def pick_engine(engine_ids, labels, row, hint_tty='', hint_title='', run=None):

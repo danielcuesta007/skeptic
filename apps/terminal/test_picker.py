@@ -3,6 +3,7 @@ import io
 import os
 from pathlib import Path
 import pty
+import re
 import select
 import signal
 import struct
@@ -52,7 +53,8 @@ class PickerTests(unittest.TestCase):
         return result, frames
 
     def selected(self, frame):
-        return [line.strip()[2:] for line in frame.splitlines() if line.startswith('› ')]
+        visible = re.sub(r'\x1b\[[?0-9;]*[A-Za-z]', '', frame)
+        return [line.strip()[2:] for line in visible.splitlines() if line.startswith('› ')]
 
     def test_long_list_navigation_and_scroll(self):
         result, frames = self.run_picker(b'\x1b[B' * 9 + b'\x1b[A' * 3 + b'\r')
@@ -70,7 +72,6 @@ class PickerTests(unittest.TestCase):
         _, frames = self.run_picker(b'\r', options=['界' * 80, 'x' * 120])
         for line in frames[0].splitlines():
             # Remove only the picker control sequences.
-            import re
             line = re.sub(r'\x1b\[[?0-9;]*[A-Za-z]', '', line)
             width = sum(2 if unicodedata.east_asian_width(c) in ('W', 'F') else 1 for c in line)
             self.assertLessEqual(width, 31)

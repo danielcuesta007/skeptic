@@ -11,17 +11,6 @@ on silentNote(msg)
 end silentNote
 
 on run
-	set home to POSIX path of (path to home folder)
-	set widgetDir to home & ".skeptic-widget"
-	do shell script "/bin/mkdir -p " & quoted form of widgetDir
-	set debounce to "now=$(date +%s); last=$(cat " & quoted form of (widgetDir & "last-switch") & " 2>/dev/null || echo 0); test $((now - last)) -ge 2 || exit 200; printf %s \"$now\" > " & quoted form of (widgetDir & "last-switch")
-	try
-		do shell script debounce
-	on error errMsg number errNum
-		if errNum is 200 then return
-		my silentNote(errMsg)
-		return
-	end try
 	set shortTTY to ""
 	set tabTitle to ""
 	try
@@ -55,6 +44,17 @@ on run
 		return
 	end try
 	if shortTTY is "" then return
+	set home to POSIX path of (path to home folder)
+	set widgetDir to home & ".skeptic-widget/"
+	do shell script "/bin/mkdir -p " & quoted form of widgetDir
+	set debounce to "now=$(date +%s); last=$(cat " & quoted form of (widgetDir & "last-switch") & " 2>/dev/null || echo 0); test $((now - last)) -ge 2 || exit 200; printf %s \"$now\" > " & quoted form of (widgetDir & "last-switch")
+	try
+		do shell script debounce
+	on error errMsg number errNum
+		if errNum is 200 then return
+		my silentNote(errMsg)
+		return
+	end try
 	do shell script "/usr/bin/printf %s " & quoted form of shortTTY & " > " & quoted form of (widgetDir & "hint-tty")
 	do shell script "/usr/bin/printf %s " & quoted form of tabTitle & " > " & quoted form of (widgetDir & "hint-title")
 	set skeptic to quoted form of (home & ".local/bin/skeptic")
